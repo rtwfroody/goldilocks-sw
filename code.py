@@ -1,0 +1,3 @@
+import thermostat
+
+thermostat.main()
