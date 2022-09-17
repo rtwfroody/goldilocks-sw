@@ -8,8 +8,9 @@ import socketpool
 import terminalio
 import wifi
 import traceback
-from adafruit_datetime import datetime
 import adafruit_ntp
+import time
+import adafruit_pcf8523
 
 class Mqtt(object):
     mqtt_prefix = "goldilocks/sensor/temperature_F/"
@@ -81,13 +82,13 @@ class Display(object):
 
         self.display.show(splash)
 
-    def show_table(self, ntp, table):
+    def show_table(self, now, table):
         text_group = displayio.Group(x=10, y=10)
         # This does a fucking network call...
-        #dt = ntp.datetime
-        lines = ["%04d-%02d-%02d %02d:%02d:%02d" %
-            (dt.tm_year, dt.tm_mon, dt.tm_mday, dt.tm_hour, dt.tm_min, dt.tm_sec)
-        ]
+        lines = ["%04d-%02d-%02d %02d:%02d:%02d" % (
+            now.tm_year, now.tm_mon, now.tm_mday,
+            now.tm_hour, now.tm_min, now.tm_sec
+        )]
         lines += table.items()
         text = "\n".join(str(i) for i in lines)
         text_area = label.Label(terminalio.FONT, text=text, color=0xFFFF00)
@@ -102,9 +103,17 @@ class Thermostat(object):
         self.mqtt = Mqtt(secrets.mqtt_server, secrets.mqtt_port,
                          secrets.mqtt_username, secrets.mqtt_password,
                          self.socket_pool)
-        # TODO: How do you deal with timezones?
-        self.ntp = adafruit_ntp.NTP(self.socket_pool, tz_offset=-8)
         self.temperatures = {}
+        self.i2c = board.I2C()
+        self.rtc = adafruit_pcf8523.PCF8523(self.i2c)
+
+        # TODO: How do you deal with timezones?
+        ntp = adafruit_ntp.NTP(self.socket_pool, tz_offset=-7)
+        # Sync at boot up
+        self.rtc.datetime = ntp.datetime
+
+    def now(self):
+        return self.rtc.datetime
 
     def run(self):
         while True:
@@ -112,7 +121,7 @@ class Thermostat(object):
             for (k, v) in temperature_updates:
                 self.temperatures[k] = v
             if self.temperatures:
-                self.display.show_table(self.ntp, self.temperatures)
+                self.display.show_table(self.now(), self.temperatures)
 
 def main():
     thermostat = Thermostat()
