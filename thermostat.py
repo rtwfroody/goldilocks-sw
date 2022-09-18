@@ -48,7 +48,7 @@ class Mqtt(object):
         if not self.client:
             self.connect()
         try:
-            self.client.loop()
+            self.client.loop(0)
         except OSError as e:
             print("MQTT loop() raised:")
             traceback.print_exception(e, e, e.__traceback__)
@@ -163,22 +163,34 @@ class Thermostat(object):
         
         ### Local variables.
         self.temperatures = {}
+        self.last_stamp = 0
 
     def now(self):
         return self.rtc.datetime
 
+    def stamp(self, text=""):
+        now = time.monotonic()
+        print("%fs %s" % (now - self.last_stamp, text))
+        self.last_stamp = now
+
     def run(self):
         self.display.main()
         while True:
+            #self.stamp("start")
             self.display.update_time(self.now())
+            #self.stamp("update_time")
             temperature_updates = self.mqtt.poll()
+            #self.stamp("mqtt poll")
             for (k, v) in temperature_updates:
                 self.temperatures[k] = v
+            #self.stamp("temp updates")
             if temperature_updates:
                 self.display.update_temperatures(self.temperatures)
+                #self.stamp("update_temperatures")
 
             while not self.touch.buffer_empty:
                 print(self.touch.read_data())
+            #self.stamp("touch print")
 
 def main():
     thermostat = Thermostat()
