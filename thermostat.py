@@ -14,6 +14,7 @@ import adafruit_pcf8523
 from adafruit_stmpe610 import Adafruit_STMPE610_SPI
 import digitalio
 from adafruit_button import Button
+import json
 
 class Mqtt(object):
     mqtt_prefix = "goldilocks/sensor/temperature_F/"
@@ -43,7 +44,7 @@ class Mqtt(object):
         self.client.on_message = self.on_message
         self.client.connect()
         self.client.subscribe(self.mqtt_prefix + "#")
-    
+
     def poll(self):
         if not self.client:
             self.connect()
@@ -56,10 +57,15 @@ class Mqtt(object):
                 self.client.disconnect()
             except OSError as e:
                 print("MQTT disconnect() raised:")
-                traceback.print_exception(e)
+                traceback.print_exception(e, e, e.__traceback__)
             self.client = None
             # We'll connect again the next poll()
         return list(self.temperatures.items())
+
+class Settings(object):
+    def __init__(self):
+        self.temp_high = 80
+        self.temp_low = 60
 
 class TouchScreenEvent(object):
     DOWN = 0
@@ -94,7 +100,15 @@ class TouchScreenEvents(object):
 
 class Gui(object):
     # TODO: play with backlight brightness, https://learn.adafruit.com/making-a-pyportal-user-interface-displayio/display
-    def __init__(self, spi):
+    presets = {
+        "Sleep": (58, 74),
+        "Away": (64, 79),
+        "Home": (68, 75)
+    }
+
+    def __init__(self, settings, spi):
+        self.settings = settings
+
         self.width = 320
         self.height = 240
 
@@ -128,29 +142,38 @@ class Gui(object):
         splash.append(text_group)
         return splash
 
+    def select_preset(self, name):
+        self.settings.temp_low, self.settings.temp_high = self.presets[name]
+        self.low_label.text = str(self.settings.temp_low)
+        self.high_label.text = str(self.settings.temp_high)
+
     def make_main(self):
         self.main_group = displayio.Group()
         spacing = 10
         button_height = 40
         group_x = int(spacing/2)
         group_y = int(self.height - button_height - spacing/2)
-        presets = ["Sleep", "Away", "Home"]
         self.main_buttons = []
-        for i, preset in enumerate(presets):
+        for i, name in enumerate(self.presets):
             button = Button(
-                x=group_x + int(i * self.width / 3 + spacing / 2),
+                x=group_x + int(i * self.width / len(self.presets) + spacing / 2),
                 y=group_y,
-                width=int(self.width / 3 - spacing),
+                width=int(self.width / len(self.presets) - spacing),
                 height = button_height,
-                label=preset,
+                label=name,
                 label_font=terminalio.FONT,
                 style=Button.ROUNDRECT)
+            button.pressed = lambda name=name: self.select_preset(name)
             self.main_buttons.append(button)
             self.main_group.append(button)
 
         info_group = displayio.Group(x=int(spacing/2), y=80)
         self.time_label = label.Label(terminalio.FONT, text="time", color=0xFFFFFF, x=10, y=10)
-        self.temperature_label = label.Label(terminalio.FONT, text="temperature", color=0xFF80FF, x=10, y=30)
+        self.low_label = label.Label(terminalio.FONT, text=str(self.settings.temp_low), x=10, y=30, color=0xffffff)
+        self.high_label = label.Label(terminalio.FONT, text=str(self.settings.temp_high), x=60, y=30, color=0xffffff)
+        self.temperature_label = label.Label(terminalio.FONT, text="temperature", color=0xFF80FF, x=10, y=50)
+        info_group.append(self.low_label)
+        info_group.append(self.high_label)
         info_group.append(self.time_label)
         info_group.append(self.temperature_label)
         self.main_group.append(info_group)
@@ -180,12 +203,13 @@ class Gui(object):
     def poll(self):
         event = self.tse.poll()
         if event:
-            print(event)
             x = int(self.width * event.x / 4096)
             y = int(self.height * event.y / 4096)
             if self.selected:
                 if self.selected.contains((x, y)):
-                    # No change needed
+                    if event.typ == TouchScreenEvent.UP:
+                        print(self.selected)
+                        self.selected.pressed()
                     return
                 else:
                     self.selected.selected = False
@@ -202,10 +226,13 @@ class Gui(object):
 
 class Thermostat(object):
     def __init__(self):
+        self.settings = Settings()
+
         ### Hardware devices
         # Get splash screen going first.
         spi = board.SPI()
-        self.gui = Gui(spi)
+        self.gui = Gui(self.settings, spi)
+
         i2c = board.I2C()
         self.rtc = adafruit_pcf8523.PCF8523(i2c)
 
