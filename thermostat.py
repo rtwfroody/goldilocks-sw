@@ -15,6 +15,7 @@ from adafruit_stmpe610 import Adafruit_STMPE610_SPI
 import digitalio
 from adafruit_button import Button
 import json
+from adafruit_bitmap_font import bitmap_font
 
 class Mqtt(object):
     mqtt_prefix = "goldilocks/sensor/temperature_F/"
@@ -109,6 +110,9 @@ class Gui(object):
     def __init__(self, settings, spi):
         self.settings = settings
 
+        self.fonts = {}
+        self.load_font("DejaVuSansMono-Bold-18")
+
         self.width = 320
         self.height = 240
 
@@ -130,14 +134,17 @@ class Gui(object):
 
         self.selected = None
 
+    def load_font(self, name):
+        self.fonts[name] = bitmap_font.load_font("font/%s.pcf" % name)
+
     def make_splash(self):
         # Make the display context
         splash = displayio.Group()
 
         # Draw a label
-        text_group = displayio.Group(scale=3, x=57, y=120)
+        text_group = displayio.Group(x=57, y=120)
         text = "Goldilocks"
-        text_area = label.Label(terminalio.FONT, text=text, color=0xFFFF00)
+        text_area = label.Label(self.fonts["DejaVuSansMono-Bold-18"], text=text, color=0xFFFF00)
         text_group.append(text_area)  # Subgroup for text scaling
         splash.append(text_group)
         return splash
