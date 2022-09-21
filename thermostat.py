@@ -111,7 +111,7 @@ class Gui(object):
         self.settings = settings
 
         self.fonts = {}
-        self.load_font("DejaVuSansMono-Bold-18")
+        self.load_font("b24", "DejaVuSansMono-Bold-24")
 
         self.width = 320
         self.height = 240
@@ -124,6 +124,13 @@ class Gui(object):
         splash = self.make_splash()
         self.display.show(splash)
 
+        self.load_font("b18", "DejaVuSansMono-Bold-18")
+        self.load_font("b12", "DejaVuSansMono-Bold-12")
+        self.load_font("b8", "DejaVuSansMono-Bold-8")
+        self.load_font("8", "DejaVuSansMono-8")
+        self.load_font("12", "DejaVuSansMono-12")
+        self.load_font("18", "DejaVuSansMono-18")
+
         # Set up touchscreen
         touch_cs = digitalio.DigitalInOut(board.D6)
         touch = Adafruit_STMPE610_SPI(spi, touch_cs,
@@ -134,25 +141,25 @@ class Gui(object):
 
         self.selected = None
 
-    def load_font(self, name):
-        self.fonts[name] = bitmap_font.load_font("font/%s.pcf" % name)
+    def load_font(self, name, filename):
+        self.fonts[name] = bitmap_font.load_font("font/%s.pcf" % filename)
 
     def make_splash(self):
         # Make the display context
         splash = displayio.Group()
 
         # Draw a label
-        text_group = displayio.Group(x=57, y=120)
-        text = "Goldilocks"
-        text_area = label.Label(self.fonts["DejaVuSansMono-Bold-18"], text=text, color=0xFFFF00)
-        text_group.append(text_area)  # Subgroup for text scaling
-        splash.append(text_group)
+        text_area = label.Label(self.fonts["b24"], text="Goldilocks", color=0xFFFF00,
+                                x=int(self.width/2), y=int(self.height/2))
+        text_area.anchor_point = (0.5, 0.5)
+        text_area.anchor_position= (self.width/2, self.height/2)
+        splash.append(text_area)
         return splash
 
     def select_preset(self, name):
         self.settings.temp_low, self.settings.temp_high = self.presets[name]
-        self.low_label.text = str(self.settings.temp_low)
-        self.high_label.text = str(self.settings.temp_high)
+        self.low_label.text = "%dF" % self.settings.temp_low
+        self.high_label.text = "%dF" % self.settings.temp_high
 
     def make_main(self):
         self.main_group = displayio.Group()
@@ -168,29 +175,24 @@ class Gui(object):
                 width=int(self.width / len(self.presets) - spacing),
                 height = button_height,
                 label=name,
-                label_font=terminalio.FONT,
+                label_font=self.fonts["b18"],
                 style=Button.ROUNDRECT)
             button.pressed = lambda name=name: self.select_preset(name)
             self.main_buttons.append(button)
             self.main_group.append(button)
 
-        info_group = displayio.Group(x=int(spacing/2), y=80)
-        self.time_label = label.Label(terminalio.FONT, text="time", color=0xFFFFFF, x=10, y=10)
-        self.low_label = label.Label(terminalio.FONT, text=str(self.settings.temp_low), x=10, y=30, color=0xffffff)
-        self.high_label = label.Label(terminalio.FONT, text=str(self.settings.temp_high), x=60, y=30, color=0xffffff)
-        self.temperature_label = label.Label(terminalio.FONT, text="temperature", color=0xFF80FF, x=10, y=50)
+        info_group = displayio.Group(x=int(spacing/2), y=int(spacing/2))
+        self.time_label = label.Label(self.fonts["12"], text="time", color=0xFFFFFF, x=10, y=10)
+        self.low_label = label.Label(self.fonts["18"], text=str(self.settings.temp_low), x=10, y=50, color=0x9f9fff)
+        self.high_label = label.Label(self.fonts["18"], text=str(self.settings.temp_high), x=260, y=50, color=0xff9f9f)
+        self.avg_label = label.Label(self.fonts["b24"], x=120, y=50, color=0xffffff)
+        self.temperature_label = label.Label(self.fonts["12"], text="temperature", color=0xFF80FF, x=10, y=100)
         info_group.append(self.low_label)
         info_group.append(self.high_label)
         info_group.append(self.time_label)
         info_group.append(self.temperature_label)
+        info_group.append(self.avg_label)
         self.main_group.append(info_group)
-
-        #self.bitmap = displayio.Bitmap(self.display.width, self.display.height, 2)
-        #palette = displayio.Palette(2)
-        #palette[0] = 0x000000
-        #palette[1] = 0x8fffff
-        #tile_grid = displayio.TileGrid(self.bitmap, pixel_shader=palette)
-        #self.main_group.append(tile_grid)
 
     def update_time(self, t):
         self.time_label.text = "%04d-%02d-%02d %02d:%02d:%02d" % (
@@ -198,11 +200,9 @@ class Gui(object):
             t.tm_hour, t.tm_min, t.tm_sec
         )
 
-    def update_temperatures(self, temps):
+    def update_temperatures(self, temps, overall):
         self.temperature_label.text = "\n".join(repr(i) for i in temps.items())
-
-    #def draw_pixel(self, x, y):
-    #    self.bitmap[int(x), int(y)] = 1
+        self.avg_label.text = "%.1fF" % overall
 
     def show_main(self):
         self.display.show(self.main_group)
@@ -282,7 +282,8 @@ class Thermostat(object):
             for (k, v) in temperature_updates:
                 self.temperatures[k] = v
             if temperature_updates:
-                self.gui.update_temperatures(self.temperatures)
+                self.overall_temperature = sum(self.temperatures.values()) / len(self.temperatures)
+                self.gui.update_temperatures(self.temperatures, self.overall_temperature)
             self.gui.poll()
 
 def main():
