@@ -76,8 +76,11 @@ class Mqtt():
             password=self.password,
             socket_pool=self.socket_pool)
         self.client.on_message = self.on_message
-        self.client.connect()
-        self.client.subscribe(self.mqtt_prefix + "#")
+        try:
+            self.client.connect()
+            self.client.subscribe(self.mqtt_prefix + "#")
+        except OSError as e:
+            print("Failed to connect to {self.server}:{self.port}: {e}")
 
     def poll(self):
         if not self.client:
@@ -179,10 +182,9 @@ class Gui(object):
         splash = displayio.Group()
 
         # Draw a label
-        text_area = label.Label(self.fonts["b24"], text="Goldilocks", color=0xFFFF00,
-                                x=0, y=int(self.height/2))
-        text_area.anchor_point = (0.5, 0.5)
-        text_area.anchor_position= (self.width/2, self.height/2)
+        text_area = label.Label(self.fonts["b24"], text="Goldilocks", color=0xFFFF00)
+        text_area.x = int((self.width - text_area.width) / 2)
+        text_area.y = int((self.height - text_area.height) / 2)
         splash.append(text_area)
         return splash
 
