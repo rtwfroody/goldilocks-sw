@@ -1,23 +1,56 @@
-from adafruit_display_text import label
-from adafruit_minimqtt import adafruit_minimqtt
+"""
+Thermostat head unit. Features:
+    * GUI
+    * Controls heat pump
+    * Gets remote sensor readings
+    * Easily accessible presets
+"""
+
+# pylint: disable-msg=missing-function-docstring
+# pylint: disable-msg=invalid-name
+
 import adafruit_ili9341
+import adafruit_ntp
+import adafruit_pcf8523
 import board
+import digitalio
 import displayio
+import json
 import secrets
 import socketpool
-import terminalio
-import wifi
-import traceback
-import adafruit_ntp
 import time
-import adafruit_pcf8523
-from adafruit_stmpe610 import Adafruit_STMPE610_SPI
-import digitalio
-from adafruit_button import Button
-import json
+import traceback
+import wifi
 from adafruit_bitmap_font import bitmap_font
+from adafruit_button import Button
+from adafruit_display_text import label
+from adafruit_minimqtt import adafruit_minimqtt
+from adafruit_stmpe610 import Adafruit_STMPE610_SPI
 
-class Mqtt(object):
+class Settings():
+    """Track settings that can be stored/restored on disk."""
+    path = "/goldilocks.json"
+
+    def __init__(self):
+        self.data = {
+            "temp_high": 80,
+            "temp_low": 60,
+            "preset": None
+        }
+        self.load()
+
+    def load(self):
+        try:
+            with open(self.path) as fd:
+                self.data.update(json.load(fd))
+        except OSError as e:
+            print(e)
+
+    def save(self):
+        with open(self.path, "w") as fd:
+            json.dump(fd, self.data)
+
+class Mqtt():
     mqtt_prefix = "goldilocks/sensor/temperature_F/"
     def __init__(self, server, port, username, password, socket_pool):
         self.client = None
@@ -28,14 +61,14 @@ class Mqtt(object):
         self.socket_pool = socket_pool
         self.temperatures = {}
 
-    def on_message(self, client, topic, message):
-        print("New message on topic {0}: {1}".format(topic, message))
+    def on_message(self, _client, topic, message):
+        print(f"New message on topic {topic}: {message}")
         location = topic[len(self.mqtt_prefix):]
         value = float(message)
         self.temperatures[location] = value
 
     def connect(self):
-        print("MQTT connecting to %s:%d" % (self.server, self.port))
+        print(f"MQTT connecting to {self.server}:{self.port}")
         self.client = adafruit_minimqtt.MQTT(
             broker=self.server,
             port=self.port,
@@ -63,11 +96,6 @@ class Mqtt(object):
             # We'll connect again the next poll()
         return list(self.temperatures.items())
 
-class Settings(object):
-    def __init__(self):
-        self.temp_high = 80
-        self.temp_low = 60
-
 class TouchScreenEvent(object):
     DOWN = 0
     UP = 1
@@ -78,7 +106,7 @@ class TouchScreenEvent(object):
         self.y = y
 
     def __repr__(self):
-        return "TouchScreenEvent(%d, %d, %d)" % (self.typ, self.x, self.y)
+        return f"TouchScreenEvent({self.typ}, {self.x}, {self.y})"
 
 class TouchScreenEvents(object):
     def __init__(self, touch):
@@ -90,17 +118,19 @@ class TouchScreenEvents(object):
         last = self.last
         self.last = point
         if point:
-            x, y, pressure = point
+            x, y, _pressure = point
             if last:
                 return TouchScreenEvent(TouchScreenEvent.DRAG, x, y)
-            else:
-                return TouchScreenEvent(TouchScreenEvent.DOWN, x, y)
-        else:
-            if last:
-                return TouchScreenEvent(TouchScreenEvent.UP, last[0], last[1])
+            return TouchScreenEvent(TouchScreenEvent.DOWN, x, y)
+
+        if last:
+            return TouchScreenEvent(TouchScreenEvent.UP, last[0], last[1])
+        
+        return None
 
 class Gui(object):
-    # TODO: play with backlight brightness, https://learn.adafruit.com/making-a-pyportal-user-interface-displayio/display
+    # TODO: play with backlight brightness,
+    # https://learn.adafruit.com/making-a-pyportal-user-interface-displayio/display
     presets = {
         "Sleep": (58, 74),
         "Away": (64, 79),
@@ -142,7 +172,7 @@ class Gui(object):
         self.selected = None
 
     def load_font(self, name, filename):
-        self.fonts[name] = bitmap_font.load_font("font/%s.pcf" % filename)
+        self.fonts[name] = bitmap_font.load_font(f"font/{filename}.pcf")
 
     def make_splash(self):
         # Make the display context
@@ -150,7 +180,7 @@ class Gui(object):
 
         # Draw a label
         text_area = label.Label(self.fonts["b24"], text="Goldilocks", color=0xFFFF00,
-                                x=int(self.width/2), y=int(self.height/2))
+                                x=0, y=int(self.height/2))
         text_area.anchor_point = (0.5, 0.5)
         text_area.anchor_position= (self.width/2, self.height/2)
         splash.append(text_area)
@@ -158,8 +188,8 @@ class Gui(object):
 
     def select_preset(self, name):
         self.settings.temp_low, self.settings.temp_high = self.presets[name]
-        self.low_label.text = "%dF" % self.settings.temp_low
-        self.high_label.text = "%dF" % self.settings.temp_high
+        self.low_label.text = f"{self.settings.temp_low:.0f}F"
+        self.high_label.text = f"{self.settings.temp_high:.0f}F"
 
     def make_main(self):
         self.main_group = displayio.Group()
@@ -183,10 +213,10 @@ class Gui(object):
 
         info_group = displayio.Group(x=int(spacing/2), y=int(spacing/2))
         self.time_label = label.Label(self.fonts["12"], text="time", color=0xFFFFFF, x=10, y=10)
-        self.low_label = label.Label(self.fonts["18"], text=str(self.settings.temp_low), x=10, y=50, color=0x9f9fff)
-        self.high_label = label.Label(self.fonts["18"], text=str(self.settings.temp_high), x=260, y=50, color=0xff9f9f)
+        self.low_label = label.Label(self.fonts["18"], x=10, y=50, color=0x9f9fff)
+        self.high_label = label.Label(self.fonts["18"], x=260, y=50, color=0xff9f9f)
         self.avg_label = label.Label(self.fonts["b24"], x=120, y=50, color=0xffffff)
-        self.temperature_label = label.Label(self.fonts["12"], text="temperature", color=0xFF80FF, x=10, y=100)
+        self.temperature_label = label.Label(self.fonts["12"], color=0xFF80FF, x=10, y=100)
         info_group.append(self.low_label)
         info_group.append(self.high_label)
         info_group.append(self.time_label)
@@ -215,12 +245,11 @@ class Gui(object):
             if self.selected:
                 if self.selected.contains((x, y)):
                     if event.typ == TouchScreenEvent.UP:
-                        print(self.selected)
                         self.selected.pressed()
                     return
-                else:
-                    self.selected.selected = False
-                    self.selected = None
+
+                self.selected.selected = False
+                self.selected = None
 
             for button in self.main_buttons:
                 if button.contains((x, y)):
@@ -244,10 +273,10 @@ class Thermostat(object):
         self.rtc = adafruit_pcf8523.PCF8523(i2c)
 
         # Start network, and use it.
-        wifi.radio.connect(secrets.ssid, secrets.password)
+        wifi.radio.connect(secrets.SSID, secrets.PASSWORD)
         self.socket_pool = socketpool.SocketPool(wifi.radio)
-        self.mqtt = Mqtt(secrets.mqtt_server, secrets.mqtt_port,
-                         secrets.mqtt_username, secrets.mqtt_password,
+        self.mqtt = Mqtt(secrets.MQTT_SERVER, secrets.MQTT_PORT,
+                         secrets.MQTT_USERNAME, secrets.MQTT_PASSWORD,
                          self.socket_pool)
 
         # TODO: How do you deal with timezones?
@@ -258,13 +287,16 @@ class Thermostat(object):
         except OSError as e:
             # Doesn't always work.
             print("NTP failed: %r" % e)
-        
+
         ### Local variables.
         self.temperatures = {}
         self.last_stamp = 0
 
         self.min_point = [10000, 10000, 10000]
         self.max_point = [0, 0, 0]
+
+    def error(self, error):
+        print(error)
 
     def now(self):
         return self.rtc.datetime
@@ -282,8 +314,8 @@ class Thermostat(object):
             for (k, v) in temperature_updates:
                 self.temperatures[k] = v
             if temperature_updates:
-                self.overall_temperature = sum(self.temperatures.values()) / len(self.temperatures)
-                self.gui.update_temperatures(self.temperatures, self.overall_temperature)
+                overall_temperature = sum(self.temperatures.values()) / len(self.temperatures)
+                self.gui.update_temperatures(self.temperatures, overall_temperature)
             self.gui.poll()
 
 def main():
