@@ -1,29 +1,33 @@
 """
 Thermostat head unit. Features:
-    * GUI
-    * Controls heat pump
-    * Gets remote sensor readings
-    * Easily accessible presets
+* GUI
+* Controls heat pump
+* Gets remote sensor readings
+* Easily accessible presets
+
+Code intended for ESP32-S3 Feather
 """
 
 # pylint: disable-msg=missing-function-docstring
 # pylint: disable-msg=invalid-name
 
+import json
+import time
+import traceback
+
+import secrets
+
 import adafruit_ili9341
 import adafruit_ntp
 import adafruit_pcf8523
-import board
-import digitalio
-import displayio
-import json
-import secrets
-import socketpool
-import time
-import traceback
-import wifi
-from adafruit_bitmap_font import bitmap_font
+import board    # pylint: disable-msg=import-error
+import digitalio    # pylint: disable-msg=import-error
+import displayio    # pylint: disable-msg=import-error
+import socketpool   # pylint: disable-msg=import-error
+import wifi # pylint: disable-msg=import-error
+from adafruit_bitmap_font import bitmap_font # pylint: disable-msg=import-error
 from adafruit_button import Button
-from adafruit_display_text import label
+from adafruit_display_text import label # pylint: disable-msg=import-error
 from adafruit_minimqtt import adafruit_minimqtt
 from adafruit_stmpe610 import Adafruit_STMPE610_SPI
 
@@ -80,7 +84,7 @@ class Mqtt():
             self.client.connect()
             self.client.subscribe(self.mqtt_prefix + "#")
         except OSError as e:
-            print("Failed to connect to {self.server}:{self.port}: {e}")
+            print(f"Failed to connect to {self.server}:{self.port}: {e}")
 
     def poll(self):
         if not self.client:
@@ -99,7 +103,7 @@ class Mqtt():
             # We'll connect again the next poll()
         return list(self.temperatures.items())
 
-class TouchScreenEvent(object):
+class TouchScreenEvent():
     DOWN = 0
     UP = 1
     DRAG = 2
@@ -111,7 +115,7 @@ class TouchScreenEvent(object):
     def __repr__(self):
         return f"TouchScreenEvent({self.typ}, {self.x}, {self.y})"
 
-class TouchScreenEvents(object):
+class TouchScreenEvents():
     def __init__(self, touch):
         self.touch = touch
         self.last = None
@@ -128,7 +132,7 @@ class TouchScreenEvents(object):
 
         if last:
             return TouchScreenEvent(TouchScreenEvent.UP, last[0], last[1])
-        
+
         return None
 
 class Gui(object):
@@ -227,6 +231,7 @@ class Gui(object):
         self.main_group.append(info_group)
 
     def update_time(self, t):
+        # pylint: disable-msg=consider-using-f-string
         self.time_label.text = "%04d-%02d-%02d %02d:%02d:%02d" % (
             t.tm_year, t.tm_mon, t.tm_mday,
             t.tm_hour, t.tm_min, t.tm_sec
@@ -262,7 +267,7 @@ class Gui(object):
                 self.selected.selected = False
                 self.selected = None
 
-class Thermostat(object):
+class Thermostat():
     def __init__(self):
         self.settings = Settings()
 
@@ -288,7 +293,7 @@ class Thermostat(object):
             self.rtc.datetime = ntp.datetime
         except OSError as e:
             # Doesn't always work.
-            print("NTP failed: %r" % e)
+            print(f"NTP failed: {e}")
 
         ### Local variables.
         self.temperatures = {}
@@ -305,7 +310,7 @@ class Thermostat(object):
 
     def stamp(self, text=""):
         now = time.monotonic()
-        print("%fs %s" % (now - self.last_stamp, text))
+        print(f"{now - self.last_stamp}s {text}")
         self.last_stamp = now
 
     def run(self):
