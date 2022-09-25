@@ -30,6 +30,10 @@ from adafruit_button import Button
 from adafruit_display_text import label # pylint: disable-msg=import-error
 from adafruit_minimqtt import adafruit_minimqtt
 from adafruit_stmpe610 import Adafruit_STMPE610_SPI
+from adafruit_bme280 import basic as adafruit_bme280
+
+def celsius_to_fahrenheit(celsius):
+    return celsius * 9 / 5 + 32
 
 class Settings():
     """Track settings that can be stored/restored on disk."""
@@ -135,7 +139,7 @@ class TouchScreenEvents():
 
         return None
 
-class Gui(object):
+class Gui():
     # TODO: play with backlight brightness,
     # https://learn.adafruit.com/making-a-pyportal-user-interface-displayio/display
     presets = {
@@ -295,6 +299,8 @@ class Thermostat():
             # Doesn't always work.
             print(f"NTP failed: {e}")
 
+        self.bme280 = adafruit_bme280.Adafruit_BME280_I2C(i2c)
+
         ### Local variables.
         self.temperatures = {}
         self.last_stamp = 0
@@ -318,12 +324,16 @@ class Thermostat():
         while True:
             self.gui.update_time(self.now())
             temperature_updates = self.mqtt.poll()
+            temperature_updates.append(("head", celsius_to_fahrenheit(self.bme280.temperature)))
             for (k, v) in temperature_updates:
                 self.temperatures[k] = v
             if temperature_updates:
                 overall_temperature = sum(self.temperatures.values()) / len(self.temperatures)
                 self.gui.update_temperatures(self.temperatures, overall_temperature)
             self.gui.poll()
+
+            # Does this save power?
+            time.sleep(0.1)
 
 def main():
     thermostat = Thermostat()
