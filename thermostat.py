@@ -21,6 +21,7 @@ import adafruit_ili9341
 import adafruit_ntp
 import adafruit_pcf8523
 import board    # pylint: disable-msg=import-error
+import busio    # pylint: disable-msg=import-error
 import digitalio    # pylint: disable-msg=import-error
 import displayio    # pylint: disable-msg=import-error
 import socketpool   # pylint: disable-msg=import-error
@@ -95,7 +96,7 @@ class Mqtt():
             self.connect()
         try:
             self.client.loop(0)
-        except OSError as e:
+        except (OSError, AttributeError) as e:
             print("MQTT loop() raised:")
             traceback.print_exception(e, e, e.__traceback__)
             try:
@@ -300,6 +301,7 @@ class Thermostat():
             print(f"NTP failed: {e}")
 
         self.bme280 = adafruit_bme280.Adafruit_BME280_I2C(i2c)
+        self.uart = busio.UART(board.TX, board.RX, baudrate=9600, timeout=0)
 
         ### Local variables.
         self.temperatures = {}
@@ -332,8 +334,12 @@ class Thermostat():
                 self.gui.update_temperatures(self.temperatures, overall_temperature)
             self.gui.poll()
 
+            data = self.uart.read(32)
+            if data:
+                print("".join("%02x" % c for c in data))
+
             # Does this save power?
-            time.sleep(0.1)
+            #time.sleep(0.1)
 
 def main():
     thermostat = Thermostat()
