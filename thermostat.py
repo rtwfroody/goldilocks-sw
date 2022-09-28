@@ -101,7 +101,7 @@ class Mqtt():
             traceback.print_exception(e, e, e.__traceback__)
             try:
                 self.client.disconnect()
-            except OSError as e:
+            except (OSError, AttributeError) as e:
                 print("MQTT disconnect() raised:")
                 traceback.print_exception(e, e, e.__traceback__)
             self.client = None
@@ -272,6 +272,19 @@ class Gui():
                 self.selected.selected = False
                 self.selected = None
 
+class Network():
+    def __init__(self, ssid, password):
+        self.ssid = ssid
+        self.password = password
+        self._socket_pool = None
+
+    def connect(self):
+        wifi.radio.connect(self.ssid, self.password)
+        self._socket_pool = socketpool.SocketPool(wifi.radio)
+
+    def socket_pool(self):
+        return self._socket_pool
+
 class Thermostat():
     def __init__(self):
         self.settings = Settings()
@@ -285,14 +298,14 @@ class Thermostat():
         self.rtc = adafruit_pcf8523.PCF8523(i2c)
 
         # Start network, and use it.
-        wifi.radio.connect(secrets.SSID, secrets.PASSWORD)
-        self.socket_pool = socketpool.SocketPool(wifi.radio)
+        self.network = Network(secrets.SSID, secrets.PASSWORD)
+        self.network.connect()
         self.mqtt = Mqtt(secrets.MQTT_SERVER, secrets.MQTT_PORT,
                          secrets.MQTT_USERNAME, secrets.MQTT_PASSWORD,
-                         self.socket_pool)
+                         self.network.socket_pool())
 
         # TODO: How do you deal with timezones?
-        ntp = adafruit_ntp.NTP(self.socket_pool, tz_offset=-7)
+        ntp = adafruit_ntp.NTP(self.network.socket_pool(), tz_offset=-7)
         # Sync at boot up
         try:
             self.rtc.datetime = ntp.datetime
