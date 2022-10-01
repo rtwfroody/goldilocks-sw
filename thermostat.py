@@ -96,12 +96,12 @@ class Mqtt():
             self.connect()
         try:
             self.client.loop(0)
-        except (OSError, AttributeError) as e:
+        except (adafruit_minimqtt.MMQTTException, OSError, AttributeError) as e:
             print("MQTT loop() raised:")
             traceback.print_exception(e, e, e.__traceback__)
             try:
                 self.client.disconnect()
-            except (OSError, AttributeError) as e:
+            except (adafruit_minimqtt.MMQTTException, OSError, AttributeError) as e:
                 print("MQTT disconnect() raised:")
                 traceback.print_exception(e, e, e.__traceback__)
             self.client = None
