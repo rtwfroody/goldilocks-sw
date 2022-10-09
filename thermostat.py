@@ -32,6 +32,8 @@ from adafruit_display_text import label # pylint: disable-msg=import-error
 from adafruit_minimqtt import adafruit_minimqtt
 from adafruit_stmpe610 import Adafruit_STMPE610_SPI
 from adafruit_bme280 import basic as adafruit_bme280
+from HeatPump import HeatPump
+from priority_queue import PriorityQueue
 
 def celsius_to_fahrenheit(celsius):
     return celsius * 9 / 5 + 32
@@ -285,6 +287,39 @@ class Network():
     def socket_pool(self):
         return self._socket_pool
 
+class Task():
+    def __init__(self, fn=None):
+        self.fn = fn
+
+    def run(self):
+        return self.fn()
+
+class RepeatTask():
+    def __init__(self, fn, period):
+        self.fn = fn
+        self.period = period
+
+    def run(self):
+        self.fn()
+        return self.period
+
+class TaskRunner():
+    def __init__(self):
+        # Array of (next run time, Task)
+        self.task_queue = PriorityQueue()
+
+    def add(self, task, delay=0):
+        self.task_queue.add(task, -time.monotonic() - delay)
+
+    def run(self):
+        now = time.monotonic()
+        run_time = -self.task_queue.peek_priority()
+        if run_time <= now:
+            task = self.task_queue.pop()
+            run_after = task.run()
+            if run_after:
+                self.task_queue.add(task, -run_time - run_after)
+
 class Thermostat():
     def __init__(self):
         self.settings = Settings()
@@ -293,6 +328,12 @@ class Thermostat():
         # Get splash screen going first.
         spi = board.SPI()
         self.gui = Gui(self.settings, spi)
+
+        self.task_runner = TaskRunner()
+
+        self.task_runner.add(RepeatTask(
+            lambda: self.gui.update_time(self.now()),
+            1))
 
         i2c = board.I2C()
         self.rtc = adafruit_pcf8523.PCF8523(i2c)
@@ -315,6 +356,12 @@ class Thermostat():
 
         self.bme280 = adafruit_bme280.Adafruit_BME280_I2C(i2c)
         self.uart = busio.UART(board.TX, board.RX, baudrate=9600, timeout=0)
+        
+        self.heatPump = HeatPump(self.uart)
+        def check_heat_pump():
+            self.heatPump.connect()
+            return 15
+        self.task_runner.add(Task(check_heat_pump))
 
         ### Local variables.
         self.temperatures = {}
@@ -337,7 +384,8 @@ class Thermostat():
     def run(self):
         self.gui.show_main()
         while True:
-            self.gui.update_time(self.now())
+            self.task_runner.run()
+
             temperature_updates = self.mqtt.poll()
             temperature_updates.append(("head", celsius_to_fahrenheit(self.bme280.temperature)))
             for (k, v) in temperature_updates:
@@ -347,9 +395,7 @@ class Thermostat():
                 self.gui.update_temperatures(self.temperatures, overall_temperature)
             self.gui.poll()
 
-            data = self.uart.read(32)
-            if data:
-                print("".join("%02x" % c for c in data))
+            self.heatPump.poll()
 
             # Does this save power?
             #time.sleep(0.1)
