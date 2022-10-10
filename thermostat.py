@@ -63,13 +63,13 @@ class Settings():
 
 class Mqtt():
     mqtt_prefix = "goldilocks/sensor/temperature_F/"
-    def __init__(self, server, port, username, password, socket_pool):
+    def __init__(self, server, port, username, password, network):
         self.client = None
         self.server = server
         self.port = port
         self.username = username
         self.password = password
-        self.socket_pool = socket_pool
+        self.network = network
         self.temperatures = {}
 
     def on_message(self, _client, topic, message):
@@ -79,13 +79,18 @@ class Mqtt():
         self.temperatures[location] = value
 
     def connect(self):
+        if self.client:
+            return
+        socket_pool = self.network.socket_pool()
+        if not socket_pool:
+            return
         print(f"MQTT connecting to {self.server}:{self.port}")
         self.client = adafruit_minimqtt.MQTT(
             broker=self.server,
             port=self.port,
             username=self.username,
             password=self.password,
-            socket_pool=self.socket_pool)
+            socket_pool=socket_pool)
         self.client.on_message = self.on_message
         try:
             self.client.connect()
@@ -95,7 +100,7 @@ class Mqtt():
 
     def poll(self):
         if not self.client:
-            self.connect()
+            return
         try:
             self.client.loop(0)
         except (adafruit_minimqtt.MMQTTException, OSError, AttributeError) as e:
@@ -279,10 +284,19 @@ class Network():
         self.ssid = ssid
         self.password = password
         self._socket_pool = None
+        # wifi.radio doesn't have method that indicates whether it's connected?
+        self.connected = False
 
     def connect(self):
-        wifi.radio.connect(self.ssid, self.password)
+        if self.connected:
+            return
+        try:
+            wifi.radio.connect(self.ssid, self.password)
+        except ConnectionError as e:
+            print("connect to %s: %s" % (self.ssid, e))
+            return
         self._socket_pool = socketpool.SocketPool(wifi.radio)
+        self.connected = True
 
     def socket_pool(self):
         return self._socket_pool
@@ -340,21 +354,17 @@ class Thermostat():
 
         # Start network, and use it.
         self.network = Network(secrets.SSID, secrets.PASSWORD)
-        self.network.connect()
+
+        self.task_runner.add(RepeatTask(self.network.connect, 10))
         self.mqtt = Mqtt(secrets.MQTT_SERVER, secrets.MQTT_PORT,
                          secrets.MQTT_USERNAME, secrets.MQTT_PASSWORD,
-                         self.network.socket_pool())
-
-        # TODO: How do you deal with timezones?
-        ntp = adafruit_ntp.NTP(self.network.socket_pool(), tz_offset=-7)
-        # Sync at boot up
-        try:
-            self.rtc.datetime = ntp.datetime
-        except OSError as e:
-            # Doesn't always work.
-            print(f"NTP failed: {e}")
+                         self.network)
+        self.task_runner.add(RepeatTask(self.mqtt.connect, 10), 1)
+        self.task_runner.add(RepeatTask(self.sync_time, 12 * 3600), 10)
 
         self.bme280 = adafruit_bme280.Adafruit_BME280_I2C(i2c)
+        self.task_runner.add(RepeatTask( self.poll_local_temp, 1))
+
         self.uart = busio.UART(board.TX, board.RX, baudrate=2400, bits=8,
                                parity=busio.UART.Parity.EVEN, stop=1, timeout=0)
         
@@ -370,6 +380,33 @@ class Thermostat():
 
         self.min_point = [10000, 10000, 10000]
         self.max_point = [0, 0, 0]
+
+    def poll_local_temp(self):
+        self.temperatures["head"] = celsius_to_fahrenheit(self.bme280.temperature)
+        self.temperature_updated()
+
+    def poll_mqtt(self):
+        temperature_updates = self.mqtt.poll()
+        for (k, v) in temperature_updates:
+            self.temperatures[k] = v
+        self.temperature_updated()
+
+    def temperature_updated(self):
+        overall_temperature = sum(self.temperatures.values()) / len(self.temperatures)
+        self.gui.update_temperatures(self.temperatures, overall_temperature)
+
+    def sync_time(self):
+        socket_pool = self.network.socket_pool()
+        if not socket_pool:
+            return
+        # TODO: How do you deal with timezones?
+        ntp = adafruit_ntp.NTP(socket_pool, tz_offset=-7)
+        # Sync at boot up
+        try:
+            self.rtc.datetime = ntp.datetime
+        except OSError as e:
+            # Doesn't always work.
+            print(f"NTP failed: {e}")
 
     def error(self, error):
         print(error)
@@ -387,13 +424,6 @@ class Thermostat():
         while True:
             self.task_runner.run()
 
-            temperature_updates = self.mqtt.poll()
-            temperature_updates.append(("head", celsius_to_fahrenheit(self.bme280.temperature)))
-            for (k, v) in temperature_updates:
-                self.temperatures[k] = v
-            if temperature_updates:
-                overall_temperature = sum(self.temperatures.values()) / len(self.temperatures)
-                self.gui.update_temperatures(self.temperatures, overall_temperature)
             self.gui.poll()
 
             self.heatPump.poll()
