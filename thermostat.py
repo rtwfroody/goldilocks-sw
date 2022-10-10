@@ -355,13 +355,14 @@ class Thermostat():
             print(f"NTP failed: {e}")
 
         self.bme280 = adafruit_bme280.Adafruit_BME280_I2C(i2c)
-        self.uart = busio.UART(board.TX, board.RX, baudrate=9600, timeout=0)
+        self.uart = busio.UART(board.TX, board.RX, baudrate=2400, bits=8,
+                               parity=busio.UART.Parity.EVEN, stop=1, timeout=0)
         
         self.heatPump = HeatPump(self.uart)
         def check_heat_pump():
-            self.heatPump.connect()
-            return 15
-        self.task_runner.add(Task(check_heat_pump))
+            if not self.heatPump.connected():
+                self.heatPump.connect()
+        self.task_runner.add(RepeatTask(check_heat_pump, 15))
 
         ### Local variables.
         self.temperatures = {}
