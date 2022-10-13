@@ -290,11 +290,13 @@ class Network():
     def connect(self):
         if self.connected:
             return
+        print("Connecting to", self.ssid)
         try:
             wifi.radio.connect(self.ssid, self.password)
         except ConnectionError as e:
             print("connect to %s: %s" % (self.ssid, e))
             return
+        print("Connected to", self.ssid)
         self._socket_pool = socketpool.SocketPool(wifi.radio)
         self.connected = True
 
@@ -354,16 +356,18 @@ class Thermostat():
 
         # Start network, and use it.
         self.network = Network(secrets.SSID, secrets.PASSWORD)
-
         self.task_runner.add(RepeatTask(self.network.connect, 10))
+
         self.mqtt = Mqtt(secrets.MQTT_SERVER, secrets.MQTT_PORT,
                          secrets.MQTT_USERNAME, secrets.MQTT_PASSWORD,
                          self.network)
         self.task_runner.add(RepeatTask(self.mqtt.connect, 10), 1)
+        self.task_runner.add(RepeatTask(self.poll_mqtt, 10), 2)
+
         self.task_runner.add(RepeatTask(self.sync_time, 12 * 3600), 10)
 
         self.bme280 = adafruit_bme280.Adafruit_BME280_I2C(i2c)
-        self.task_runner.add(RepeatTask( self.poll_local_temp, 1))
+        self.task_runner.add(RepeatTask(self.poll_local_temp, 1))
 
         self.uart = busio.UART(board.TX, board.RX, baudrate=2400, bits=8,
                                parity=busio.UART.Parity.EVEN, stop=1, timeout=0)
