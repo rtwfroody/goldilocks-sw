@@ -170,6 +170,8 @@ class Gui():
         display_bus = displayio.FourWire(spi, command=board.D10, chip_select=board.D9)
         self.display = adafruit_ili9341.ILI9341(display_bus, width=self.width, height=self.height)
 
+        self.preset_buttons = {}
+
         splash = self.make_splash()
         self.display.show(splash)
 
@@ -209,6 +211,12 @@ class Gui():
         self.low_label.text = f"{self.settings.temp_low:.0f}F"
         self.high_label.text = f"{self.settings.temp_high:.0f}F"
 
+        for button_name, button in self.preset_buttons.items():
+            if name == button_name:
+                button.fill_color = 0x8fff8f
+            else:
+                button.fill_color = 0xffffff
+
     def make_main(self):
         self.main_group = displayio.Group()
         spacing = 10
@@ -226,6 +234,7 @@ class Gui():
                 label_font=self.fonts["b18"],
                 style=Button.ROUNDRECT)
             button.pressed = lambda name=name: self.select_preset(name)
+            self.preset_buttons[name] = button
             self.main_buttons.append(button)
             self.main_group.append(button)
 
