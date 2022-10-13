@@ -100,7 +100,7 @@ class Mqtt():
 
     def poll(self):
         if not self.client:
-            return
+            return []
         try:
             self.client.loop(0)
         except (adafruit_minimqtt.MMQTTException, OSError, AttributeError) as e:
@@ -343,7 +343,11 @@ class TaskRunner():
             task = self.task_queue.pop()
             run_after = task.run()
             if run_after:
-                self.task_queue.add(task, -run_time - run_after)
+                next_time = run_time + run_after
+                if next_time < now:
+                    print("Can't run %r after %fs because we're already too late." % (self, run_after))
+                    next_time = now + run_after
+                self.task_queue.add(task, -next_time)
 
 class Thermostat():
     def __init__(self):
@@ -371,7 +375,7 @@ class Thermostat():
                          secrets.MQTT_USERNAME, secrets.MQTT_PASSWORD,
                          self.network)
         self.task_runner.add(RepeatTask(self.mqtt.connect, 10), 1)
-        self.task_runner.add(RepeatTask(self.poll_mqtt, 10), 2)
+        self.task_runner.add(RepeatTask(self.poll_mqtt, 10), 0.5)
 
         self.task_runner.add(RepeatTask(self.sync_time, 12 * 3600), 10)
 
