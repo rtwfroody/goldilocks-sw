@@ -10,6 +10,10 @@ Code intended for ESP32-S3 Feather
 
 # pylint: disable-msg=missing-function-docstring
 # pylint: disable-msg=invalid-name
+# pylint: disable-msg=fixme
+# pylint: disable-msg=too-many-instance-attributes
+# pylint: disable-msg=too-few-public-methods
+# pylint: disable-msg=too-many-arguments
 
 import json
 import time
@@ -29,9 +33,9 @@ import wifi # pylint: disable-msg=import-error
 from adafruit_bitmap_font import bitmap_font # pylint: disable-msg=import-error
 from adafruit_button import Button
 from adafruit_display_text import label # pylint: disable-msg=import-error
-from adafruit_minimqtt import adafruit_minimqtt
+from adafruit_minimqtt import adafruit_minimqtt # pylint: disable-msg=no-name-in-module
 from adafruit_stmpe610 import Adafruit_STMPE610_SPI
-from adafruit_bme280 import basic as adafruit_bme280
+from adafruit_bme280 import basic as adafruit_bme280 # pylint: disable-msg=import-error
 from HeatPump import HeatPump
 from priority_queue import PriorityQueue
 
@@ -52,16 +56,17 @@ class Settings():
 
     def load(self):
         try:
-            with open(self.path) as fd:
+            with open(self.path, encoding="utf-8") as fd:
                 self.data.update(json.load(fd))
         except OSError as e:
             print(e)
 
     def save(self):
-        with open(self.path, "w") as fd:
+        with open(self.path, "w", encoding="utf-8") as fd:
             json.dump(fd, self.data)
 
 class Mqtt():
+    """"Get temperature updates from an MQTT server."""
     mqtt_prefix = "goldilocks/sensor/temperature_F/"
     def __init__(self, server, port, username, password, network):
         self.client = None
@@ -116,6 +121,7 @@ class Mqtt():
         return list(self.temperatures.items())
 
 class TouchScreenEvent():
+    """Represent a touch screen event."""
     DOWN = 0
     UP = 1
     DRAG = 2
@@ -128,6 +134,7 @@ class TouchScreenEvent():
         return f"TouchScreenEvent({self.typ}, {self.x}, {self.y})"
 
 class TouchScreenEvents():
+    """Monitor a touch screen for events."""
     def __init__(self, touch):
         self.touch = touch
         self.last = None
@@ -148,6 +155,7 @@ class TouchScreenEvents():
         return None
 
 class Gui():
+    """Display a GUI."""
     # TODO: play with backlight brightness,
     # https://learn.adafruit.com/making-a-pyportal-user-interface-displayio/display
     presets = {
@@ -260,7 +268,7 @@ class Gui():
 
     def update_temperatures(self, temps, overall):
         self.temperature_label.text = "\n".join(repr(i) for i in temps.items())
-        self.avg_label.text = "%.1fF" % overall
+        self.avg_label.text = f"{overall:.1f}F"
 
     def show_main(self):
         self.display.show(self.main_group)
@@ -289,6 +297,9 @@ class Gui():
                 self.selected = None
 
 class Network():
+    """Connect to a network.
+    If we could detect when we get disconnected, then we could automatically
+    reconnect as well."""
     def __init__(self, ssid, password):
         self.ssid = ssid
         self.password = password
@@ -303,7 +314,7 @@ class Network():
         try:
             wifi.radio.connect(self.ssid, self.password)
         except ConnectionError as e:
-            print("connect to %s: %s" % (self.ssid, e))
+            print(f"connect to {self.ssid}: {e}")
             return
         print("Connected to", self.ssid)
         self._socket_pool = socketpool.SocketPool(wifi.radio)
@@ -313,6 +324,7 @@ class Network():
         return self._socket_pool
 
 class Task():
+    """Simple task."""
     def __init__(self, fn=None):
         self.fn = fn
 
@@ -320,6 +332,7 @@ class Task():
         return self.fn()
 
 class RepeatTask():
+    """Task that needs to be repeated over and over with a given period."""
     def __init__(self, fn, period):
         self.fn = fn
         self.period = period
@@ -329,6 +342,7 @@ class RepeatTask():
         return self.period
 
 class TaskRunner():
+    """Run tasks, most urgent first."""
     def __init__(self):
         # Array of (next run time, Task)
         self.task_queue = PriorityQueue()
@@ -338,6 +352,7 @@ class TaskRunner():
 
     def run(self):
         now = time.monotonic()
+        # pylint: disable-msg=invalid-unary-operand-type
         run_time = -self.task_queue.peek_priority()
         if run_time <= now:
             task = self.task_queue.pop()
@@ -345,11 +360,13 @@ class TaskRunner():
             if run_after:
                 next_time = run_time + run_after
                 if next_time < now:
-                    print("Can't run %r after %fs because we're already too late." % (self, run_after))
+                    print(f"Can't run {self} after {run_after}s because we're already too late.")
                     next_time = now + run_after
                 self.task_queue.add(task, -next_time)
 
 class Thermostat():
+    """Top-level class for the thermostat application with GUI and temperature
+    control."""
     def __init__(self):
         self.settings = Settings()
 
@@ -384,7 +401,7 @@ class Thermostat():
 
         self.uart = busio.UART(board.TX, board.RX, baudrate=2400, bits=8,
                                parity=busio.UART.Parity.EVEN, stop=1, timeout=0)
-        
+
         self.heatPump = HeatPump(self.uart)
         def check_heat_pump():
             if not self.heatPump.connected():
@@ -425,7 +442,8 @@ class Thermostat():
             # Doesn't always work.
             print(f"NTP failed: {e}")
 
-    def error(self, error):
+    @staticmethod
+    def error(error):
         print(error)
 
     def now(self):
