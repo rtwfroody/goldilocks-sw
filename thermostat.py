@@ -118,7 +118,9 @@ class Mqtt():
                 traceback.print_exception(e, e, e.__traceback__)
             self.client = None
             # We'll connect again the next poll()
-        return list(self.temperatures.items())
+        retval = list(self.temperatures.items())
+        self.temperatures = {}
+        return retval
 
 class TouchScreenEvent():
     """Represent a touch screen event."""
@@ -267,7 +269,7 @@ class Gui():
         )
 
     def update_temperatures(self, temps, overall):
-        self.temperature_label.text = "\n".join(repr(i) for i in temps.items())
+        self.temperature_label.text = "\n".join(f"{k}: {v}" for k, v in temps.items())
         self.avg_label.text = f"{overall:.1f}F"
 
     def show_main(self):
@@ -340,6 +342,17 @@ class RepeatTask():
     def run(self):
         self.fn()
         return self.period
+
+class Datum():
+    def __init__(self, value, timestamp=None):
+        self.value = value
+        self.timestamp = timestamp or time.monotonic()
+
+    def __repr__(self):
+        return "Datum(%r, %r)" % (self.value, self.timestamp)
+
+    def __str__(self):
+        return "%.1f %.1fs ago" % (self.value, time.monotonic() - self.timestamp)
 
 class TaskRunner():
     """Run tasks, most urgent first."""
@@ -416,17 +429,17 @@ class Thermostat():
         self.max_point = [0, 0, 0]
 
     def poll_local_temp(self):
-        self.temperatures["head"] = celsius_to_fahrenheit(self.bme280.temperature)
+        self.temperatures["head"] = Datum(celsius_to_fahrenheit(self.bme280.temperature))
         self.temperature_updated()
 
     def poll_mqtt(self):
         temperature_updates = self.mqtt.poll()
         for (k, v) in temperature_updates:
-            self.temperatures[k] = v
+            self.temperatures[k] = Datum(v)
         self.temperature_updated()
 
     def temperature_updated(self):
-        overall_temperature = sum(self.temperatures.values()) / len(self.temperatures)
+        overall_temperature = sum(v.value for v in self.temperatures.values()) / len(self.temperatures)
         self.gui.update_temperatures(self.temperatures, overall_temperature)
 
     def sync_time(self):
