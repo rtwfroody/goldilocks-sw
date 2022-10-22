@@ -344,15 +344,17 @@ class RepeatTask():
         return self.period
 
 class Datum():
+    """Store a single sensor reading."""
     def __init__(self, value, timestamp=None):
         self.value = value
         self.timestamp = timestamp or time.monotonic()
 
     def __repr__(self):
-        return "Datum(%r, %r)" % (self.value, self.timestamp)
+        return f"Datum({self.value}, {self.timestamp})"
 
     def __str__(self):
-        return "%.1f %.1fs ago" % (self.value, time.monotonic() - self.timestamp)
+        ago = time.monotonic() - self.timestamp
+        return f"{self.value:.1f} {ago:.1f}s ago"
 
 class TaskRunner():
     """Run tasks, most urgent first."""
@@ -439,7 +441,8 @@ class Thermostat():
         self.temperature_updated()
 
     def temperature_updated(self):
-        overall_temperature = sum(v.value for v in self.temperatures.values()) / len(self.temperatures)
+        overall_temperature = sum(v.value for v in self.temperatures.values()) / \
+                len(self.temperatures)
         self.gui.update_temperatures(self.temperatures, overall_temperature)
 
     def sync_time(self):
