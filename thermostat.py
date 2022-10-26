@@ -194,9 +194,15 @@ class Gui():
 
         # Set up touchscreen
         touch_cs = digitalio.DigitalInOut(board.D6)
-        touch = Adafruit_STMPE610_SPI(spi, touch_cs,
-                calibration=((276, 3820), (378, 3743)))
-        self.tse = TouchScreenEvents(touch)
+        try:
+            touch = Adafruit_STMPE610_SPI(spi, touch_cs,
+                    calibration=((276, 3820), (378, 3743)))
+        except RuntimeError as e:
+            print("No touch screen connected!")
+            print(e)
+            self.tse = None
+        else:
+            self.tse = TouchScreenEvents(touch)
 
         self.make_main()
 
@@ -276,6 +282,8 @@ class Gui():
         self.display.show(self.main_group)
 
     def poll(self):
+        if not self.tse:
+            return
         event = self.tse.poll()
         if event:
             x = int(self.width * event.x / 4096)
@@ -392,12 +400,21 @@ class Thermostat():
 
         self.task_runner = TaskRunner()
 
-        self.task_runner.add(RepeatTask(
-            lambda: self.gui.update_time(self.now()),
-            1))
 
-        i2c = board.I2C()
-        self.rtc = adafruit_pcf8523.PCF8523(i2c)
+        try:
+            i2c = board.I2C()
+        except RuntimeError as e:
+            print("No I2C bus found!")
+            print(e)
+        else:
+            self.rtc = adafruit_pcf8523.PCF8523(i2c)
+            self.task_runner.add(RepeatTask(
+                lambda: self.gui.update_time(self.now()),
+                1))
+            self.task_runner.add(RepeatTask(self.sync_time, 12 * 3600), 10)
+
+            self.bme280 = adafruit_bme280.Adafruit_BME280_I2C(i2c)
+            self.task_runner.add(RepeatTask(self.poll_local_temp, 1))
 
         # Start network, and use it.
         self.network = Network(secrets.SSID, secrets.PASSWORD)
@@ -408,11 +425,6 @@ class Thermostat():
                          self.network)
         self.task_runner.add(RepeatTask(self.mqtt.connect, 10), 1)
         self.task_runner.add(RepeatTask(self.poll_mqtt, 10), 0.5)
-
-        self.task_runner.add(RepeatTask(self.sync_time, 12 * 3600), 10)
-
-        self.bme280 = adafruit_bme280.Adafruit_BME280_I2C(i2c)
-        self.task_runner.add(RepeatTask(self.poll_local_temp, 1))
 
         self.uart = busio.UART(board.TX, board.RX, baudrate=2400, bits=8,
                                parity=busio.UART.Parity.EVEN, stop=1, timeout=0)
@@ -441,8 +453,11 @@ class Thermostat():
         self.temperature_updated()
 
     def temperature_updated(self):
-        overall_temperature = sum(v.value for v in self.temperatures.values()) / \
-                len(self.temperatures)
+        if self.temperatures:
+            overall_temperature = sum(v.value for v in self.temperatures.values()) / \
+                    len(self.temperatures)
+        else:
+            overall_temperature = 70
         self.gui.update_temperatures(self.temperatures, overall_temperature)
 
     def sync_time(self):
