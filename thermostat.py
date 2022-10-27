@@ -28,6 +28,7 @@ import board    # pylint: disable-msg=import-error
 import busio    # pylint: disable-msg=import-error
 import digitalio    # pylint: disable-msg=import-error
 import displayio    # pylint: disable-msg=import-error
+import neopixel     # pylint: disable-msg=import-error
 import socketpool   # pylint: disable-msg=import-error
 import wifi # pylint: disable-msg=import-error
 from adafruit_bitmap_font import bitmap_font # pylint: disable-msg=import-error
@@ -400,6 +401,10 @@ class Thermostat():
 
         self.task_runner = TaskRunner()
 
+        self.pixel_index = 0
+        self.pixel = neopixel.NeoPixel(board.NEOPIXEL, 1, brightness=0.3,
+                                       auto_write=True, pixel_order=neopixel.GRB)
+        self.task_runner.add(RepeatTask(self.cycle_pixel, 1))
 
         try:
             i2c = board.I2C()
@@ -441,6 +446,15 @@ class Thermostat():
 
         self.min_point = [10000, 10000, 10000]
         self.max_point = [0, 0, 0]
+
+    def cycle_pixel(self):
+        if (self.pixel_index % 3) == 0:
+            self.pixel[0] = (255, 0, 0, 0.5)
+        elif (self.pixel_index % 3) == 1:
+            self.pixel[0] = (0, 255, 0, 0.5)
+        elif (self.pixel_index % 3) == 2:
+            self.pixel[0] = (0, 0, 255, 0.5)
+        self.pixel_index += 1
 
     def poll_local_temp(self):
         self.temperatures["head"] = Datum(celsius_to_fahrenheit(self.bme280.temperature))
