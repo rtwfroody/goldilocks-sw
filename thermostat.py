@@ -85,7 +85,7 @@ class Mqtt():
         self.temperatures[location] = value
 
     def connect(self):
-        if self.client:
+        if not self.network.connected() or self.client:
             return
         socket_pool = self.network.socket_pool()
         if not socket_pool:
@@ -96,21 +96,25 @@ class Mqtt():
             port=self.port,
             username=self.username,
             password=self.password,
-            socket_pool=socket_pool)
+            socket_pool=socket_pool,
+            socket_timeout=1,
+            connect_retries=1
+            )
         self.client.on_message = self.on_message
         try:
             self.client.connect()
             self.client.subscribe(self.mqtt_prefix + "#")
-        except OSError as e:
+        except (RuntimeError, OSError, adafruit_minimqtt.MMQTTException) as e:
             print(f"Failed to connect to {self.server}:{self.port}: {e}")
+            self.client = None
 
     def poll(self):
-        if not self.client:
+        if self.client is None:
             return []
         try:
             self.client.loop(0)
         except (adafruit_minimqtt.MMQTTException, OSError, AttributeError) as e:
-            print("MQTT loop() raised:")
+            print("MQTT loop() raised:", repr(e))
             traceback.print_exception(e, e, e.__traceback__)
             try:
                 self.client.disconnect()
@@ -316,10 +320,12 @@ class Network():
         self.password = password
         self._socket_pool = None
         # wifi.radio doesn't have method that indicates whether it's connected?
-        self.connected = False
+
+    def connected(self):
+        return wifi.radio.ipv4_address != None
 
     def connect(self):
-        if self.connected:
+        if self.connected():
             return
         print("Connecting to", self.ssid)
         try:
@@ -327,9 +333,8 @@ class Network():
         except ConnectionError as e:
             print(f"connect to {self.ssid}: {e}")
             return
-        print("Connected to", self.ssid)
+        print(f"Connected to {self.ssid}. hostname={wifi.radio.hostname}, ipv4_address={wifi.radio.ipv4_address}")
         self._socket_pool = socketpool.SocketPool(wifi.radio)
-        self.connected = True
 
     def socket_pool(self):
         return self._socket_pool
@@ -394,12 +399,12 @@ class Thermostat():
     def __init__(self):
         self.settings = Settings()
 
+        self.task_runner = TaskRunner()
+
         ### Hardware devices
         # Get splash screen going first.
         spi = board.SPI()
         self.gui = Gui(self.settings, spi)
-
-        self.task_runner = TaskRunner()
 
         self.pixel_index = 0
         self.pixel = neopixel.NeoPixel(board.NEOPIXEL, 1, brightness=0.3,
@@ -428,8 +433,8 @@ class Thermostat():
         self.mqtt = Mqtt(secrets.MQTT_SERVER, secrets.MQTT_PORT,
                          secrets.MQTT_USERNAME, secrets.MQTT_PASSWORD,
                          self.network)
-        self.task_runner.add(RepeatTask(self.mqtt.connect, 10), 1)
-        self.task_runner.add(RepeatTask(self.poll_mqtt, 10), 0.5)
+        self.task_runner.add(RepeatTask(self.mqtt.connect, 60), 5)
+        self.task_runner.add(RepeatTask(self.poll_mqtt, 1), 6)
 
         self.uart = busio.UART(board.TX, board.RX, baudrate=2400, bits=8,
                                parity=busio.UART.Parity.EVEN, stop=1, timeout=0)
