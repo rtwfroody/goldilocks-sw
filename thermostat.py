@@ -321,8 +321,9 @@ class Network():
         self._socket_pool = None
         # wifi.radio doesn't have method that indicates whether it's connected?
 
-    def connected(self):
-        return wifi.radio.ipv4_address != None
+    @staticmethod
+    def connected():
+        return wifi.radio.ipv4_address is not None
 
     def connect(self):
         if self.connected():
@@ -333,7 +334,9 @@ class Network():
         except ConnectionError as e:
             print(f"connect to {self.ssid}: {e}")
             return
-        print(f"Connected to {self.ssid}. hostname={wifi.radio.hostname}, ipv4_address={wifi.radio.ipv4_address}")
+        print(f"Connected to {self.ssid}.",
+            f"hostname={wifi.radio.hostname},",
+            f"ipv4_address={wifi.radio.ipv4_address}")
         self._socket_pool = socketpool.SocketPool(wifi.radio)
 
     def socket_pool(self):
@@ -453,12 +456,12 @@ class Thermostat():
         self.max_point = [0, 0, 0]
 
     def cycle_pixel(self):
-        if (self.pixel_index % 3) == 0:
-            self.pixel[0] = (255, 0, 0, 0.5)
-        elif (self.pixel_index % 3) == 1:
-            self.pixel[0] = (0, 255, 0, 0.5)
-        elif (self.pixel_index % 3) == 2:
-            self.pixel[0] = (0, 0, 255, 0.5)
+        #if (self.pixel_index % 3) == 0:
+        #    self.pixel[0] = (255, 0, 0, 0.5)
+        #elif (self.pixel_index % 3) == 1:
+        #    self.pixel[0] = (0, 255, 0, 0.5)
+        #elif (self.pixel_index % 3) == 2:
+        #    self.pixel[0] = (0, 0, 255, 0.5)
         self.pixel_index += 1
 
     def poll_local_temp(self):
