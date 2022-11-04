@@ -60,11 +60,14 @@ class Settings():
             with open(self.path, encoding="utf-8") as fd:
                 self.data.update(json.load(fd))
         except OSError as e:
-            print(e)
+            print(f"Loading {self.path}: {e}")
 
     def save(self):
-        with open(self.path, "w", encoding="utf-8") as fd:
-            json.dump(fd, self.data)
+        try:
+            with open(self.path, "w", encoding="utf-8") as fd:
+                json.dump(fd, self.data)
+        except OSError as e:
+            print(f"Saving {self.path}: {e}")
 
 class Mqtt():
     """"Get temperature updates from an MQTT server."""
@@ -142,22 +145,31 @@ class TouchScreenEvent():
 
 class TouchScreenEvents():
     """Monitor a touch screen for events."""
+
     def __init__(self, touch):
         self.touch = touch
-        self.last = None
+        self.last_point = None
+        self.last_time = 0
 
     def poll(self):
+        now = time.monotonic()
+        if now - self.last_time > .15:
+            if self.last_point:
+                point = self.last_point
+                self.last_point = None
+                return TouchScreenEvent(TouchScreenEvent.UP, point[0], point[1])
+
         point = self.touch.touch_point
-        last = self.last
-        self.last = point
         if point:
             x, y, _pressure = point
-            if last:
-                return TouchScreenEvent(TouchScreenEvent.DRAG, x, y)
-            return TouchScreenEvent(TouchScreenEvent.DOWN, x, y)
+            if self.last_point:
+                event = TouchScreenEvent(TouchScreenEvent.DRAG, x, y)
+            else:
+                event = TouchScreenEvent(TouchScreenEvent.DOWN, x, y)
 
-        if last:
-            return TouchScreenEvent(TouchScreenEvent.UP, last[0], last[1])
+            self.last_point = point
+            self.last_time = now
+            return event
 
         return None
 
@@ -229,6 +241,9 @@ class Gui():
 
     def select_preset(self, name):
         self.settings.temp_low, self.settings.temp_high = self.presets[name]
+        self.settings.preset = name
+        self.settings.save()
+
         self.low_label.text = f"{self.settings.temp_low:.0f}F"
         self.high_label.text = f"{self.settings.temp_high:.0f}F"
 
@@ -289,27 +304,29 @@ class Gui():
     def poll(self):
         if not self.tse:
             return
-        event = self.tse.poll()
-        if event:
+        while True:
+            event = self.tse.poll()
+            if not self.selected and not event:
+                break
+
+            if not event:
+                continue
+
             x = int(self.width * event.x / 4096)
             y = int(self.height * event.y / 4096)
-            if self.selected:
-                if self.selected.contains((x, y)):
-                    if event.typ == TouchScreenEvent.UP:
-                        self.selected.pressed()
-                    return
 
-                self.selected.selected = False
-                self.selected = None
-
+            self.selected = None
             for button in self.main_buttons:
-                if button.contains((x, y)):
-                    button.selected = True
+                button.selected = button.contains((x, y))
+                if button.selected:
                     self.selected = button
-        else:
-            if self.selected:
-                self.selected.selected = False
-                self.selected = None
+
+            if event.typ == TouchScreenEvent.UP:
+                if self.selected:
+                    self.selected.selected = False
+                    self.selected.pressed()
+                    self.selected = None
+                break
 
 class Network():
     """Connect to a network.
@@ -426,8 +443,12 @@ class Thermostat():
                 1))
             self.task_runner.add(RepeatTask(self.sync_time, 12 * 3600), 10)
 
-            self.bme280 = adafruit_bme280.Adafruit_BME280_I2C(i2c)
-            self.task_runner.add(RepeatTask(self.poll_local_temp, 1))
+            try:
+                self.bme280 = adafruit_bme280.Adafruit_BME280_I2C(i2c)
+            except ValueError as e:
+                print(f"Couldn't init BME280: {e}")
+            else:
+                self.task_runner.add(RepeatTask(self.poll_local_temp, 1))
 
         # Start network, and use it.
         self.network = Network(secrets.SSID, secrets.PASSWORD)
@@ -483,6 +504,8 @@ class Thermostat():
         self.gui.update_temperatures(self.temperatures, overall_temperature)
 
     def sync_time(self):
+        if not self.network.connected():
+            return
         socket_pool = self.network.socket_pool()
         if not socket_pool:
             return
