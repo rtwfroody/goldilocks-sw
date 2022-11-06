@@ -284,7 +284,9 @@ class Gui():
         group_x = int(spacing/2)
         group_y = int(self.height - button_height - spacing/2)
         self.main_buttons = []
-        for i, name in enumerate(self.presets):
+        # Sort preset names by temperature range.
+        preset_names = sorted(self.presets.keys(), key=lambda n: self.presets[n])
+        for i, name in enumerate(preset_names):
             button = Button(
                 x=group_x + int(i * self.width / len(self.presets) + spacing / 2),
                 y=group_y,
