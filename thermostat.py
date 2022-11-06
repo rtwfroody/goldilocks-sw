@@ -294,7 +294,6 @@ class Gui():
                 label_font=self.fonts["b18"],
                 style=Button.ROUNDRECT)
             button.pressed = lambda name=name: self.select_preset(name)
-            button.selected = self.settings.preset == name
             self.preset_buttons[name] = button
             self.main_buttons.append(button)
             self.main_group.append(button)
@@ -302,9 +301,7 @@ class Gui():
         info_group = displayio.Group(x=int(spacing/2), y=int(spacing/2))
         self.time_label = label.Label(self.fonts["12"], text="time", color=0xFFFFFF, x=10, y=10)
         self.low_label = label.Label(self.fonts["18"], x=10, y=50, color=0x9f9fff)
-        self.update_low_temperature()
         self.high_label = label.Label(self.fonts["18"], x=260, y=50, color=0xff9f9f)
-        self.update_high_temperature()
         self.avg_label = label.Label(self.fonts["b24"], x=120, y=50, color=0xffffff)
         self.temperature_label = label.Label(self.fonts["12"], color=0xFF80FF, x=10, y=100)
         info_group.append(self.low_label)
@@ -313,6 +310,12 @@ class Gui():
         info_group.append(self.temperature_label)
         info_group.append(self.avg_label)
         self.main_group.append(info_group)
+
+        if self.settings.preset:
+            self.select_preset(self.settings.preset)
+        else:
+            self.update_low_temperature()
+            self.update_high_temperature()
 
     def update_time(self, t):
         # pylint: disable-msg=consider-using-f-string
