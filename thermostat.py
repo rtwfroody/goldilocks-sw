@@ -46,26 +46,42 @@ def celsius_to_fahrenheit(celsius):
 class Settings():
     """Track settings that can be stored/restored on disk."""
     path = "/goldilocks.json"
+    _data = {
+        "temp_high": 80,
+        "temp_low": 60,
+        "preset": None
+    }
+    _dirty = False
 
     def __init__(self):
-        self.data = {
-            "temp_high": 80,
-            "temp_low": 60,
-            "preset": None
-        }
         self.load()
+
+    def __getattr__(self, name):
+        return self._data[name]
+
+    def set(self, name, value):
+        return self.__setattr__(name, value)
+
+    # This works on my machine in python3. It does not work on circuitpython, so
+    # use set() for that.
+    def __setattr__(self, name, value):
+        assert name in self._data
+        if value != self._data[name]:
+            self._data[name] = value
+            self._dirty = True
 
     def load(self):
         try:
             with open(self.path, encoding="utf-8") as fd:
-                self.data.update(json.load(fd))
-        except OSError as e:
+                self._data.update(json.load(fd))
+        except (OSError, ValueError) as e:
             print(f"Loading {self.path}: {e}")
 
     def save(self):
         try:
+            data = json.dumps(self._data)
             with open(self.path, "w", encoding="utf-8") as fd:
-                json.dump(fd, self.data)
+                fd.write(data)
         except OSError as e:
             print(f"Saving {self.path}: {e}")
 
@@ -240,18 +256,26 @@ class Gui():
         return splash
 
     def select_preset(self, name):
-        self.settings.temp_low, self.settings.temp_high = self.presets[name]
-        self.settings.preset = name
+        low, high = self.presets[name]
+        self.settings.set("temp_low", low)
+        self.settings.set("temp_high", high)
+        self.settings.set("preset", name)
         self.settings.save()
 
-        self.low_label.text = f"{self.settings.temp_low:.0f}F"
-        self.high_label.text = f"{self.settings.temp_high:.0f}F"
+        self.update_low_temperature()
+        self.update_high_temperature()
 
         for button_name, button in self.preset_buttons.items():
             if name == button_name:
                 button.fill_color = 0x8fff8f
             else:
                 button.fill_color = 0xffffff
+
+    def update_low_temperature(self):
+        self.low_label.text = f"{self.settings.temp_low:.0f}F"
+
+    def update_high_temperature(self):
+        self.high_label.text = f"{self.settings.temp_high:.0f}F"
 
     def make_main(self):
         self.main_group = displayio.Group()
@@ -270,6 +294,7 @@ class Gui():
                 label_font=self.fonts["b18"],
                 style=Button.ROUNDRECT)
             button.pressed = lambda name=name: self.select_preset(name)
+            button.selected = self.settings.preset == name
             self.preset_buttons[name] = button
             self.main_buttons.append(button)
             self.main_group.append(button)
@@ -277,7 +302,9 @@ class Gui():
         info_group = displayio.Group(x=int(spacing/2), y=int(spacing/2))
         self.time_label = label.Label(self.fonts["12"], text="time", color=0xFFFFFF, x=10, y=10)
         self.low_label = label.Label(self.fonts["18"], x=10, y=50, color=0x9f9fff)
+        self.update_low_temperature()
         self.high_label = label.Label(self.fonts["18"], x=260, y=50, color=0xff9f9f)
+        self.update_high_temperature()
         self.avg_label = label.Label(self.fonts["b24"], x=120, y=50, color=0xffffff)
         self.temperature_label = label.Label(self.fonts["12"], color=0xFF80FF, x=10, y=100)
         info_group.append(self.low_label)
