@@ -28,7 +28,6 @@ import board    # pylint: disable-msg=import-error
 import busio    # pylint: disable-msg=import-error
 import digitalio    # pylint: disable-msg=import-error
 import displayio    # pylint: disable-msg=import-error
-import neopixel     # pylint: disable-msg=import-error
 import socketpool   # pylint: disable-msg=import-error
 import wifi # pylint: disable-msg=import-error
 from adafruit_bitmap_font import bitmap_font # pylint: disable-msg=import-error
@@ -42,6 +41,9 @@ from priority_queue import PriorityQueue
 
 def celsius_to_fahrenheit(celsius):
     return celsius * 9 / 5 + 32
+
+def fahrenheit_to_celsius(fahrenheit):
+    return (fahrenheit - 32) * 5 / 9
 
 class Settings():
     """Track settings that can be stored/restored on disk."""
@@ -237,9 +239,14 @@ class Gui():
         else:
             self.tse = TouchScreenEvents(touch)
 
-        self.make_main()
+        self.pages = [
+            self.make_main(),
+            self.make_temperature_detail()
+        ]
 
         self.selected = None
+        self.drag_start = None
+        self.current_page = 0
 
     def load_font(self, name, filename):
         self.fonts[name] = bitmap_font.load_font(f"font/{filename}.pcf")
@@ -278,7 +285,7 @@ class Gui():
         self.high_label.text = f"{self.settings.temp_high:.0f}F"
 
     def make_main(self):
-        self.main_group = displayio.Group()
+        page = displayio.Group()
         spacing = 10
         button_height = 40
         group_x = int(spacing/2)
@@ -298,26 +305,32 @@ class Gui():
             button.pressed = lambda name=name: self.select_preset(name)
             self.preset_buttons[name] = button
             self.main_buttons.append(button)
-            self.main_group.append(button)
+            page.append(button)
 
         info_group = displayio.Group(x=int(spacing/2), y=int(spacing/2))
         self.time_label = label.Label(self.fonts["12"], text="time", color=0xFFFFFF, x=10, y=10)
         self.low_label = label.Label(self.fonts["18"], x=10, y=50, color=0x9f9fff)
         self.high_label = label.Label(self.fonts["18"], x=260, y=50, color=0xff9f9f)
         self.avg_label = label.Label(self.fonts["b24"], x=120, y=50, color=0xffffff)
-        self.temperature_label = label.Label(self.fonts["12"], color=0xFF80FF, x=10, y=100)
         info_group.append(self.low_label)
         info_group.append(self.high_label)
         info_group.append(self.time_label)
-        info_group.append(self.temperature_label)
         info_group.append(self.avg_label)
-        self.main_group.append(info_group)
+        page.append(info_group)
 
         if self.settings.preset:
             self.select_preset(self.settings.preset)
         else:
             self.update_low_temperature()
             self.update_high_temperature()
+
+        return page
+
+    def make_temperature_detail(self):
+        page = displayio.Group()
+        self.temperature_label = label.Label(self.fonts["12"], color=0xFF80FF, x=10, y=100)
+        page.append(self.temperature_label)
+        return page
 
     def update_time(self, t):
         # pylint: disable-msg=consider-using-f-string
@@ -331,7 +344,7 @@ class Gui():
         self.avg_label.text = f"{overall:.1f}F"
 
     def show_main(self):
-        self.display.show(self.main_group)
+        self.display.show(self.pages[0])
 
     def poll(self):
         if not self.tse:
@@ -353,12 +366,29 @@ class Gui():
                 if button.selected:
                     self.selected = button
 
-            if event.typ == TouchScreenEvent.UP:
+            if event.typ == TouchScreenEvent.DOWN:
+                self.drag_start = x, y
+
+            elif event.typ == TouchScreenEvent.UP:
                 if self.selected:
                     self.selected.selected = False
                     self.selected.pressed()
                     self.selected = None
+                else:
+                    drag_x = x - self.drag_start[0]
+                    drag_y = y - self.drag_start[1]
+                    self.swipe(drag_x, drag_y)
                 break
+
+    def swipe(self, x, y):
+        if abs(y) > 80:
+            return
+        if x > 150:
+            self.current_page += 1
+        elif x < 150:
+            self.current_page -= 1
+        self.current_page = self.current_page % len(self.pages)
+        self.display.show(self.pages[self.current_page])
 
 class Network():
     """Connect to a network.
@@ -458,11 +488,6 @@ class Thermostat():
         spi = board.SPI()
         self.gui = Gui(self.settings, spi)
 
-        self.pixel_index = 0
-        self.pixel = neopixel.NeoPixel(board.NEOPIXEL, 1, brightness=0.3,
-                                       auto_write=True, pixel_order=neopixel.GRB)
-        self.task_runner.add(RepeatTask(self.cycle_pixel, 1))
-
         try:
             i2c = board.I2C()
         except RuntimeError as e:
@@ -496,10 +521,6 @@ class Thermostat():
                                parity=busio.UART.Parity.EVEN, stop=1, timeout=0)
 
         self.heatPump = HeatPump(self.uart)
-        def check_heat_pump():
-            if not self.heatPump.connected():
-                self.heatPump.connect()
-        self.task_runner.add(RepeatTask(check_heat_pump, 15))
 
         ### Local variables.
         self.temperatures = {}
@@ -507,15 +528,6 @@ class Thermostat():
 
         self.min_point = [10000, 10000, 10000]
         self.max_point = [0, 0, 0]
-
-    def cycle_pixel(self):
-        #if (self.pixel_index % 3) == 0:
-        #    self.pixel[0] = (255, 0, 0, 0.5)
-        #elif (self.pixel_index % 3) == 1:
-        #    self.pixel[0] = (0, 255, 0, 0.5)
-        #elif (self.pixel_index % 3) == 2:
-        #    self.pixel[0] = (0, 0, 255, 0.5)
-        self.pixel_index += 1
 
     def poll_local_temp(self):
         self.temperatures["head"] = Datum(celsius_to_fahrenheit(self.bme280.temperature))
@@ -534,6 +546,7 @@ class Thermostat():
         else:
             overall_temperature = 70
         self.gui.update_temperatures(self.temperatures, overall_temperature)
+        self.heatPump.set_remote_temperature_c(fahrenheit_to_celsius(overall_temperature))
 
     def sync_time(self):
         if not self.network.connected():
@@ -542,8 +555,7 @@ class Thermostat():
         if not socket_pool:
             return
         # TODO: How do you deal with timezones?
-        ntp = adafruit_ntp.NTP(socket_pool, tz_offset=-7)
-        # Sync at boot up
+        ntp = adafruit_ntp.NTP(socket_pool, tz_offset=-8)
         try:
             self.rtc.datetime = ntp.datetime
         except OSError as e:
