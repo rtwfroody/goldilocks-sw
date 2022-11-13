@@ -201,11 +201,18 @@ class Gui():
         "Home": (68, 75)
     }
 
+    def get_font(self, size, bold=False):
+        if (size, bold) not in self.fonts:
+            font_name = "DejaVuSansMono"
+            if bold:
+                font_name += "-Bold"
+            self.fonts[(size, bold)] = bitmap_font.load_font(f"font/{font_name}-{size}.pcf")
+        return self.fonts[(size, bold)]
+
     def __init__(self, settings, spi):
         self.settings = settings
 
         self.fonts = {}
-        self.load_font("b24", "DejaVuSansMono-Bold-24")
 
         self.width = 320
         self.height = 240
@@ -219,13 +226,6 @@ class Gui():
 
         splash = self.make_splash()
         self.display.show(splash)
-
-        self.load_font("b18", "DejaVuSansMono-Bold-18")
-        self.load_font("b12", "DejaVuSansMono-Bold-12")
-        self.load_font("b8", "DejaVuSansMono-Bold-8")
-        self.load_font("8", "DejaVuSansMono-8")
-        self.load_font("12", "DejaVuSansMono-12")
-        self.load_font("18", "DejaVuSansMono-18")
 
         # Set up touchscreen
         touch_cs = digitalio.DigitalInOut(board.D6)
@@ -248,15 +248,12 @@ class Gui():
         self.drag_start = None
         self.current_page = 0
 
-    def load_font(self, name, filename):
-        self.fonts[name] = bitmap_font.load_font(f"font/{filename}.pcf")
-
     def make_splash(self):
         # Make the display context
         splash = displayio.Group()
 
         # Draw a label
-        text_area = label.Label(self.fonts["b24"], text="Goldilocks", color=0xFFFF00)
+        text_area = label.Label(self.get_font(30, True), text="Goldilocks", color=0xFFFF00)
         text_area.x = int((self.width - text_area.width) / 2)
         text_area.y = int((self.height - text_area.height) / 2)
         splash.append(text_area)
@@ -277,6 +274,18 @@ class Gui():
                 button.fill_color = 0x8fff8f
             else:
                 button.fill_color = 0xffffff
+
+    def increase_low_temperature(self, amount):
+        self.settings.temp_low += amount
+        self.settings.temp_high = max(self.settings.temp_high, self.settings.temp_low + 4)
+        self.update_low_temperature()
+        self.update_high_temperature()
+
+    def increase_high_temperature(self, amount):
+        self.settings.temp_high += amount
+        self.settings.temp_low = min(self.settings.temp_low, self.settings.temp_high - 4)
+        self.update_low_temperature()
+        self.update_high_temperature()
 
     def update_low_temperature(self):
         self.low_label.text = f"{self.settings.temp_low:.0f}F"
@@ -300,7 +309,7 @@ class Gui():
                 width=int(self.width / len(self.presets) - spacing),
                 height = button_height,
                 label=name,
-                label_font=self.fonts["b18"],
+                label_font=self.get_font(18, True),
                 style=Button.ROUNDRECT)
             button.pressed = lambda name=name: self.select_preset(name)
             self.preset_buttons[name] = button
@@ -308,15 +317,21 @@ class Gui():
             page.append(button)
 
         info_group = displayio.Group(x=int(spacing/2), y=int(spacing/2))
-        self.time_label = label.Label(self.fonts["12"], text="time", color=0xFFFFFF, x=10, y=10)
-        self.low_label = label.Label(self.fonts["18"], x=10, y=50, color=0x9f9fff)
-        self.high_label = label.Label(self.fonts["18"], x=260, y=50, color=0xff9f9f)
-        self.avg_label = label.Label(self.fonts["b24"], x=120, y=50, color=0xffffff)
-        info_group.append(self.low_label)
-        info_group.append(self.high_label)
+        self.time_label = label.Label(self.get_font(24), text="time", color=0xFFFFFF,
+                                      anchor_point=(0.5, 0),
+                                      anchored_position=(self.width/2, 0))
         info_group.append(self.time_label)
-        info_group.append(self.avg_label)
-        page.append(info_group)
+
+        temperature_y = int(self.height/2 - 15)
+
+        self.low_label = label.Label(self.get_font(24), x=10, y=50, color=0x9f9fff,
+                                     anchor_point=(0, 0.5),
+                                     anchored_position=(0, temperature_y))
+        info_group.append(self.low_label)
+        self.high_label = label.Label(self.get_font(24), x=260, y=50, color=0xff9f9f,
+                                      anchor_point=(1, 0.5),
+                                      anchored_position=(self.width, temperature_y))
+        info_group.append(self.high_label)
 
         if self.settings.preset:
             self.select_preset(self.settings.preset)
@@ -324,19 +339,62 @@ class Gui():
             self.update_low_temperature()
             self.update_high_temperature()
 
+        self.low_up = Button(x=self.low_label.x,
+                             y=self.low_label.y - int(self.low_label.height / 2) - button_height,
+                             width=self.low_label.width, height=button_height,
+                             label="^^", label_font=self.get_font(18, True),
+                             style=Button.ROUNDRECT)
+        self.main_buttons.append(self.low_up)
+        self.low_up.pressed = lambda: self.increase_low_temperature(1)
+        info_group.append(self.low_up)
+
+        self.low_down = Button(x=self.low_label.x,
+                             y=self.low_label.y + int(self.low_label.height / 2) + 3,
+                             width=self.low_label.width, height=button_height,
+                             label="vv", label_font=self.get_font(18, True),
+                             style=Button.ROUNDRECT)
+        self.low_down.pressed = lambda: self.increase_low_temperature(-1)
+        self.main_buttons.append(self.low_down)
+        info_group.append(self.low_down)
+
+        self.high_up = Button(x=self.high_label.x,
+                             y=self.high_label.y - int(self.high_label.height / 2) - button_height,
+                             width=self.high_label.width, height=button_height,
+                             label="^^", label_font=self.get_font(18, True),
+                             style=Button.ROUNDRECT)
+        self.high_up.pressed = lambda: self.increase_high_temperature(1)
+        self.main_buttons.append(self.high_up)
+        info_group.append(self.high_up)
+
+        self.high_down = Button(x=self.high_label.x,
+                             y=self.high_label.y + int(self.high_label.height / 2) + 3,
+                             width=self.high_label.width, height=button_height,
+                             label="vv", label_font=self.get_font(18, True),
+                             style=Button.ROUNDRECT)
+        self.high_down.pressed = lambda: self.increase_high_temperature(-1)
+        self.main_buttons.append(self.high_down)
+        info_group.append(self.high_down)
+
+        self.avg_label = label.Label(self.get_font(30, True),
+                                     anchor_point=(0.5, 0.5), color=0xffffff,
+                                     anchored_position=(self.width/2, temperature_y))
+        info_group.append(self.avg_label)
+
+        page.append(info_group)
+
         return page
 
     def make_temperature_detail(self):
         page = displayio.Group()
-        self.temperature_label = label.Label(self.fonts["12"], color=0xFF80FF, x=10, y=100)
+        self.temperature_label = label.Label(self.get_font(12), color=0xFF80FF, x=10, y=100)
         page.append(self.temperature_label)
         return page
 
     def update_time(self, t):
         # pylint: disable-msg=consider-using-f-string
-        self.time_label.text = "%04d-%02d-%02d %02d:%02d:%02d" % (
-            t.tm_year, t.tm_mon, t.tm_mday,
-            t.tm_hour, t.tm_min, t.tm_sec
+        self.time_label.text = "%d/%d/%02d %02d:%02d" % (
+            t.tm_mon, t.tm_mday, t.tm_year % 100,
+            t.tm_hour, t.tm_min
         )
 
     def update_temperatures(self, temps, overall):
