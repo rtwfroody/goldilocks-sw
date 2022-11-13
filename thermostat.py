@@ -263,29 +263,39 @@ class Gui():
         low, high = self.presets[name]
         self.settings.set("temp_low", low)
         self.settings.set("temp_high", high)
-        self.settings.set("preset", name)
-        self.settings.save()
+        self.thermostat_setting_changed()
 
+    def increase_low_temperature(self, amount):
+        self.settings.set("temp_low", self.settings.temp_low + amount)
+        self.settings.set("temp_high", max(self.settings.temp_high, self.settings.temp_low + 4))
+        self.thermostat_setting_changed()
+
+    def increase_high_temperature(self, amount):
+        self.settings.set("temp_high", self.settings.temp_high + amount)
+        self.settings.set("temp_low", min(self.settings.temp_low, self.settings.temp_high - 4))
+        self.thermostat_setting_changed()
+
+    def thermostat_setting_changed(self):
         self.update_low_temperature()
         self.update_high_temperature()
 
+        # See if this matches a preset.
+        preset_found = None
+        for name in self.presets:
+            low, high = self.presets[name]
+            if (abs(low - self.settings.temp_low) < .1 and
+                    abs(high - self.settings.temp_high) < .1):
+                preset_found = name
+                break
+
+        self.settings.set("preset", preset_found)
         for button_name, button in self.preset_buttons.items():
-            if name == button_name:
+            if preset_found == button_name:
                 button.fill_color = 0x8fff8f
             else:
                 button.fill_color = 0xffffff
 
-    def increase_low_temperature(self, amount):
-        self.settings.temp_low += amount
-        self.settings.temp_high = max(self.settings.temp_high, self.settings.temp_low + 4)
-        self.update_low_temperature()
-        self.update_high_temperature()
-
-    def increase_high_temperature(self, amount):
-        self.settings.temp_high += amount
-        self.settings.temp_low = min(self.settings.temp_low, self.settings.temp_high - 4)
-        self.update_low_temperature()
-        self.update_high_temperature()
+        self.settings.save()
 
     def update_low_temperature(self):
         self.low_label.text = f"{self.settings.temp_low:.0f}F"
@@ -349,7 +359,7 @@ class Gui():
         info_group.append(self.low_up)
 
         self.low_down = Button(x=self.low_label.x,
-                             y=self.low_label.y + int(self.low_label.height / 2) + 3,
+                             y=self.low_label.y + int(self.low_label.height / 2) + 4,
                              width=self.low_label.width, height=button_height,
                              label="vv", label_font=self.get_font(18, True),
                              style=Button.ROUNDRECT)
@@ -367,7 +377,7 @@ class Gui():
         info_group.append(self.high_up)
 
         self.high_down = Button(x=self.high_label.x,
-                             y=self.high_label.y + int(self.high_label.height / 2) + 3,
+                             y=self.high_label.y + int(self.high_label.height / 2) + 4,
                              width=self.high_label.width, height=button_height,
                              label="vv", label_font=self.get_font(18, True),
                              style=Button.ROUNDRECT)
