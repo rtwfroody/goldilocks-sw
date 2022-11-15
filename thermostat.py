@@ -36,7 +36,7 @@ from adafruit_display_text import label # pylint: disable-msg=import-error
 from adafruit_minimqtt import adafruit_minimqtt # pylint: disable-msg=no-name-in-module
 from adafruit_stmpe610 import Adafruit_STMPE610_SPI
 from adafruit_bme280 import basic as adafruit_bme280 # pylint: disable-msg=import-error
-from HeatPump import HeatPump
+import HeatPump
 from priority_queue import PriorityQueue
 
 def celsius_to_fahrenheit(celsius):
@@ -50,8 +50,7 @@ class Settings():
     path = "/goldilocks.json"
     _data = {
         "temp_high": 80,
-        "temp_low": 60,
-        "preset": None
+        "temp_low": 60
     }
     _dirty = False
 
@@ -209,8 +208,8 @@ class Gui():
             self.fonts[(size, bold)] = bitmap_font.load_font(f"font/{font_name}-{size}.pcf")
         return self.fonts[(size, bold)]
 
-    def __init__(self, settings, spi):
-        self.settings = settings
+    def __init__(self, thermostat, spi):
+        self.thermostat = thermostat
 
         self.fonts = {}
 
@@ -261,18 +260,19 @@ class Gui():
 
     def select_preset(self, name):
         low, high = self.presets[name]
-        self.settings.set("temp_low", low)
-        self.settings.set("temp_high", high)
+        self.thermostat.set_range(low, high)
         self.thermostat_setting_changed()
 
     def increase_low_temperature(self, amount):
-        self.settings.set("temp_low", self.settings.temp_low + amount)
-        self.settings.set("temp_high", max(self.settings.temp_high, self.settings.temp_low + 4))
+        self.thermostat.set_range(
+            self.thermostat.get_temp_low() + amount,
+            max(self.thermostat.get_temp_high(), self.thermostat.get_temp_low() + 4))
         self.thermostat_setting_changed()
 
     def increase_high_temperature(self, amount):
-        self.settings.set("temp_high", self.settings.temp_high + amount)
-        self.settings.set("temp_low", min(self.settings.temp_low, self.settings.temp_high - 4))
+        self.thermostat.set_range(
+            min(self.thermostat.get_temp_low(), self.thermostat.get_temp_high() - 4),
+            self.thermostat.get_temp_high() + amount)
         self.thermostat_setting_changed()
 
     def thermostat_setting_changed(self):
@@ -281,27 +281,24 @@ class Gui():
 
         # See if this matches a preset.
         preset_found = None
-        for name in self.presets:
+        for name in self.presets.keys():
             low, high = self.presets[name]
-            if (abs(low - self.settings.temp_low) < .1 and
-                    abs(high - self.settings.temp_high) < .1):
+            if (abs(low - self.thermostat.get_temp_low()) < .1 and
+                    abs(high - self.thermostat.get_temp_high()) < .1):
                 preset_found = name
                 break
 
-        self.settings.set("preset", preset_found)
         for button_name, button in self.preset_buttons.items():
             if preset_found == button_name:
                 button.fill_color = 0x8fff8f
             else:
                 button.fill_color = 0xffffff
 
-        self.settings.save()
-
     def update_low_temperature(self):
-        self.low_label.text = f"{self.settings.temp_low:.0f}F"
+        self.low_label.text = f"{self.thermostat.get_temp_low():.0f}F"
 
     def update_high_temperature(self):
-        self.high_label.text = f"{self.settings.temp_high:.0f}F"
+        self.high_label.text = f"{self.thermostat.get_temp_high():.0f}F"
 
     def make_main(self):
         page = displayio.Group()
@@ -343,11 +340,7 @@ class Gui():
                                       anchored_position=(self.width, temperature_y))
         info_group.append(self.high_label)
 
-        if self.settings.preset:
-            self.select_preset(self.settings.preset)
-        else:
-            self.update_low_temperature()
-            self.update_high_temperature()
+        self.thermostat_setting_changed()
 
         self.low_up = Button(x=self.low_label.x,
                              y=self.low_label.y - int(self.low_label.height / 2) - button_height,
@@ -554,7 +547,7 @@ class Thermostat():
         ### Hardware devices
         # Get splash screen going first.
         spi = board.SPI()
-        self.gui = Gui(self.settings, spi)
+        self.gui = Gui(self, spi)
 
         try:
             i2c = board.I2C()
@@ -588,14 +581,13 @@ class Thermostat():
         self.uart = busio.UART(board.TX, board.RX, baudrate=2400, bits=8,
                                parity=busio.UART.Parity.EVEN, stop=1, timeout=0)
 
-        self.heatPump = HeatPump(self.uart)
+        self.heatPump = HeatPump.HeatPump(self.uart)
 
         ### Local variables.
         self.temperatures = {}
         self.last_stamp = 0
-
-        self.min_point = [10000, 10000, 10000]
-        self.max_point = [0, 0, 0]
+        # If set, then we're heating or cooling until we reach this temperature.
+        self.target_temperature = None
 
     def poll_local_temp(self):
         self.temperatures["head"] = Datum(celsius_to_fahrenheit(self.bme280.temperature))
@@ -614,6 +606,29 @@ class Thermostat():
         else:
             overall_temperature = 70
         self.gui.update_temperatures(self.temperatures, overall_temperature)
+
+        if self.target_temperature is None:
+            if overall_temperature <= self.settings.temp_low:
+                # It's cold
+                self.heatPump.set_mode(HeatPump.Mode.HEAT)
+                self.heatPump.set_power(True)
+                self.target_temperature = self.settings.temp_low + 1
+                self.heatPump.set_temperature_c(fahrenheit_to_celsius(self.target_temperature))
+            elif overall_temperature >= self.settings.temp_high:
+                # It's hot
+                self.heatPump.set_mode(HeatPump.Mode.COOL)
+                self.heatPump.set_power(True)
+                self.target_temperature = self.settings.temp_high - 1
+                self.heatPump.set_temperature_c(fahrenheit_to_celsius(self.target_temperature))
+            else:
+                self.heatPump.set_power(False)
+
+        else:
+            if self.settings.temp_low + 1 < overall_temperature < self.settings.temp_high - 1:
+                # We've achieved our goal!
+                self.heatPump.set_power(False)
+                self.target_temperature = None
+
         self.heatPump.set_remote_temperature_c(fahrenheit_to_celsius(overall_temperature))
 
     def sync_time(self):
@@ -653,6 +668,17 @@ class Thermostat():
 
             # Does this save power?
             #time.sleep(0.1)
+
+    def get_temp_low(self):
+        return self.settings.temp_low
+
+    def get_temp_high(self):
+        return self.settings.temp_high
+
+    def set_range(self, low, high):
+        self.settings.set("temp_low", low)
+        self.settings.set("temp_high", high)
+        self.target_temperature = None
 
 def main():
     thermostat = Thermostat()
