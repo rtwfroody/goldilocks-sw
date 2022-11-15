@@ -442,11 +442,12 @@ class Gui():
                 break
 
     def swipe(self, x, y):
-        if abs(y) > 80:
+        print(f"swipe {x}, {y}")
+        if abs(y) > 80 or abs(x) < 150:
             return
-        if x > 150:
+        if x > 0:
             self.current_page += 1
-        elif x < 150:
+        else:
             self.current_page -= 1
         self.current_page = self.current_page % len(self.pages)
         self.display.show(self.pages[self.current_page])
