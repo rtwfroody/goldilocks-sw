@@ -79,10 +79,13 @@ class Settings():
             print(f"Loading {self.path}: {e}")
 
     def save(self):
+        if not self._dirty:
+            return
         try:
             data = json.dumps(self._data)
             with open(self.path, "w", encoding="utf-8") as fd:
                 fd.write(data)
+            self._dirty = False
         except OSError as e:
             print(f"Saving {self.path}: {e}")
 
@@ -281,8 +284,7 @@ class Gui():
 
         # See if this matches a preset.
         preset_found = None
-        for name in self.presets.keys():
-            low, high = self.presets[name]
+        for name, (low, high) in self.presets.items():
             if (abs(low - self.thermostat.get_temp_low()) < .1 and
                     abs(high - self.thermostat.get_temp_high()) < .1):
                 preset_found = name
@@ -395,7 +397,7 @@ class Gui():
 
     def update_time(self, t):
         # pylint: disable-msg=consider-using-f-string
-        self.time_label.text = "%d/%d/%02d %02d:%02d" % (
+        self.time_label.text = "%d/%d/%02d %d:%02d" % (
             t.tm_mon, t.tm_mday, t.tm_year % 100,
             t.tm_hour, t.tm_min
         )
@@ -485,21 +487,30 @@ class Network():
 
 class Task():
     """Simple task."""
-    def __init__(self, fn=None):
+    def __init__(self, fn=None, name : str = None):
         self.fn = fn
+        self.name = name
 
     def run(self):
         return self.fn()
 
-class RepeatTask():
+    def repr(self):
+        return f"Task({self.fn}, {self.name})"
+
+class RepeatTask(Task):
     """Task that needs to be repeated over and over with a given period."""
-    def __init__(self, fn, period):
+    def __init__(self, fn, period, name=None):
+        super().__init__(fn, name)
         self.fn = fn
         self.period = period
+        self.name = name
 
     def run(self):
         self.fn()
         return self.period
+
+    def repr(self):
+        return f"Task({self.fn}, {self.period}, {self.name})"
 
 class Datum():
     """Store a single sensor reading."""
@@ -512,7 +523,7 @@ class Datum():
 
     def __str__(self):
         ago = time.monotonic() - self.timestamp
-        return f"{self.value:.1f} {ago:.1f}s ago"
+        return f"{self.value:.1f} {ago:.0f}s ago"
 
 class TaskRunner():
     """Run tasks, most urgent first."""
@@ -520,7 +531,7 @@ class TaskRunner():
         # Array of (next run time, Task)
         self.task_queue = PriorityQueue()
 
-    def add(self, task, delay=0):
+    def add(self, task : Task, delay=0):
         self.task_queue.add(task, -time.monotonic() - delay)
 
     def run(self):
@@ -533,7 +544,7 @@ class TaskRunner():
             if run_after:
                 next_time = run_time + run_after
                 if next_time < now:
-                    print(f"Can't run {self} after {run_after}s because we're already too late.")
+                    #print(f"Can't run {task} after {run_after}s because we're already too late.")
                     next_time = now + run_after
                 self.task_queue.add(task, -next_time)
 
@@ -541,9 +552,9 @@ class Thermostat():
     """Top-level class for the thermostat application with GUI and temperature
     control."""
     def __init__(self):
-        self.settings = Settings()
-
         self.task_runner = TaskRunner()
+
+        self.settings = Settings()
 
         ### Hardware devices
         # Get splash screen going first.
@@ -680,6 +691,8 @@ class Thermostat():
         self.settings.set("temp_low", low)
         self.settings.set("temp_high", high)
         self.target_temperature = None
+        # Save in a little while, so we don't save every time the user hits a button.
+        self.task_runner.add(Task(lambda: self.settings.save(), name="save settings"), 15)
 
 def main():
     thermostat = Thermostat()
