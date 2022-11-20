@@ -197,12 +197,6 @@ class Gui():
     """Display a GUI."""
     # TODO: play with backlight brightness,
     # https://learn.adafruit.com/making-a-pyportal-user-interface-displayio/display
-    presets = {
-        "Sleep": (58, 74),
-        "Away": (64, 79),
-        "Home": (68, 75)
-    }
-
     def get_font(self, size, bold=False):
         if (size, bold) not in self.fonts:
             font_name = "DejaVuSansMono"
@@ -262,8 +256,7 @@ class Gui():
         return splash
 
     def select_preset(self, name):
-        low, high = self.presets[name]
-        self.thermostat.set_range(low, high)
+        self.thermostat.select_preset(name)
         self.thermostat_setting_changed()
 
     def increase_low_temperature(self, amount):
@@ -284,7 +277,7 @@ class Gui():
 
         # See if this matches a preset.
         preset_found = None
-        for name, (low, high) in self.presets.items():
+        for name, (low, high) in self.thermostat.presets.items():
             if (abs(low - self.thermostat.get_temp_low()) < .1 and
                     abs(high - self.thermostat.get_temp_high()) < .1):
                 preset_found = name
@@ -310,12 +303,13 @@ class Gui():
         group_y = int(self.height - button_height - spacing/2)
         self.main_buttons = []
         # Sort preset names by temperature range.
-        preset_names = sorted(self.presets.keys(), key=lambda n: self.presets[n])
+        preset_names = sorted(self.thermostat.presets.keys(),
+                              key=lambda n: self.thermostat.presets[n])
         for i, name in enumerate(preset_names):
             button = Button(
-                x=group_x + int(i * self.width / len(self.presets) + spacing / 2),
+                x=group_x + int(i * self.width / len(self.thermostat.presets) + spacing / 2),
                 y=group_y,
-                width=int(self.width / len(self.presets) - spacing),
+                width=int(self.width / len(self.thermostat.presets) - spacing),
                 height = button_height,
                 label=name,
                 label_font=self.get_font(18, True),
@@ -397,8 +391,8 @@ class Gui():
 
     def update_time(self, t):
         # pylint: disable-msg=consider-using-f-string
-        self.time_label.text = "%d/%d/%02d %d:%02d" % (
-            t.tm_mon, t.tm_mday, t.tm_year % 100,
+        self.time_label.text = "%d/%d %d:%02d" % (
+            t.tm_mon, t.tm_mday,
             t.tm_hour, t.tm_min
         )
 
@@ -548,19 +542,69 @@ class TaskRunner():
                     next_time = now + run_after
                 self.task_queue.add(task, -next_time)
 
+class Scheduler():
+    """
+    Simple scheduler that changes the thermostat preset when we cross into a new
+    scheduled block of time.
+    """
+    daily = (
+        (8, 0, "Away"),
+        (22, 0, "Sleep")
+    )
+    def __init__(self, thermostat):
+        self.thermostat = thermostat
+        self.index = self.find_index(self.thermostat.now())
+
+    def find_index(self, tm):
+        for i, (hour, minute, _preset) in enumerate(self.daily):
+            if (hour > tm.tm_hour or
+                    (hour == tm.tm_hour and minute > tm.tm_min)):
+                return i-1
+        return -1
+
+    def poll(self):
+        now = self.thermostat.now()
+        new_index = self.find_index(now)
+        if new_index != self.index:
+            # Do we need more abstraction to hide gui?
+            self.thermostat.gui.select_preset(self.daily[new_index][2])
+            print(now, "schedule poll change to", self.daily[new_index])
+            self.index = new_index
+
+    def test(self):
+        for hour in range(0, 24):
+            for minute in range(0, 60, 30):
+                tm = time.struct_time([
+                    2000, 1, 1, # year month day
+                    hour, minute, 0, # hour minute second
+                    1, 1, 0 # wday yday isdst
+                    ])
+                print(f"{hour:2d}:{minute:02d}", self.find_index(tm))
+
 class Thermostat():
     """Top-level class for the thermostat application with GUI and temperature
     control."""
-    def __init__(self):
-        self.task_runner = TaskRunner()
 
+    presets = {
+        "Sleep": (58, 74),
+        "Away": (64, 79),
+        "Home": (68, 75)
+    }
+
+    def select_preset(self, name):
+        low, high = self.presets[name]
+        self.set_range(low, high)
+
+    def __init__(self):
         self.settings = Settings()
 
-        ### Hardware devices
         # Get splash screen going first.
         spi = board.SPI()
         self.gui = Gui(self, spi)
 
+        self.task_runner = TaskRunner()
+
+        ### Hardware devices
         try:
             i2c = board.I2C()
         except RuntimeError as e:
@@ -579,6 +623,10 @@ class Thermostat():
                 print(f"Couldn't init BME280: {e}")
             else:
                 self.task_runner.add(RepeatTask(self.poll_local_temp, 1))
+
+        self.scheduler = Scheduler(self)
+        #self.scheduler.test()
+        self.task_runner.add(RepeatTask(self.scheduler.poll, 15))
 
         # Start network, and use it.
         self.network = Network(secrets.SSID, secrets.PASSWORD)
@@ -692,7 +740,7 @@ class Thermostat():
         self.settings.set("temp_high", high)
         self.target_temperature = None
         # Save in a little while, so we don't save every time the user hits a button.
-        self.task_runner.add(Task(lambda: self.settings.save(), name="save settings"), 15)
+        self.task_runner.add(Task(self.settings.save, name="save settings"), 15)
 
 def main():
     thermostat = Thermostat()
