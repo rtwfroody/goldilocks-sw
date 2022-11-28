@@ -38,6 +38,8 @@ from adafruit_stmpe610 import Adafruit_STMPE610_SPI
 from adafruit_bme280 import basic as adafruit_bme280 # pylint: disable-msg=import-error
 import HeatPump
 from priority_queue import PriorityQueue
+import microcontroller
+from watchdog import WatchDogMode
 
 def celsius_to_fahrenheit(celsius):
     return celsius * 9 / 5 + 32
@@ -649,6 +651,9 @@ class Thermostat():
         # If set, then we're heating or cooling until we reach this temperature.
         self.target_temperature = None
 
+        microcontroller.watchdog.timeout = 20
+        microcontroller.watchdog.mode = WatchDogMode.RESET
+
     def poll_local_temp(self):
         self.temperatures["head"] = Datum(celsius_to_fahrenheit(self.bme280.temperature))
         self.temperature_updated()
@@ -720,6 +725,8 @@ class Thermostat():
     def run(self):
         self.gui.show_main()
         while True:
+            microcontroller.watchdog.feed()
+
             self.task_runner.run()
 
             self.gui.poll()
