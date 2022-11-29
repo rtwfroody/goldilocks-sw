@@ -38,14 +38,46 @@ from adafruit_stmpe610 import Adafruit_STMPE610_SPI
 from adafruit_bme280 import basic as adafruit_bme280 # pylint: disable-msg=import-error
 import HeatPump
 from priority_queue import PriorityQueue
-import microcontroller
-from watchdog import WatchDogMode
+import microcontroller # pylint: disable-msg=import-error
+from watchdog import WatchDogMode # pylint: disable-msg=import-error
 
 def celsius_to_fahrenheit(celsius):
     return celsius * 9 / 5 + 32
 
 def fahrenheit_to_celsius(fahrenheit):
     return (fahrenheit - 32) * 5 / 9
+
+class Logger():
+    """Send log messages to somewhere that I can read them, maybe."""
+    def __init__(self):
+        self.index = 0
+        self.targets = {
+            "print": print
+        }
+
+    def add_udp_destination(self, pool, host, port):
+        s = pool.socket(pool.AF_INET, pool.SOCK_DGRAM)
+
+        def write(*args):
+            msg = " ".join(str(a) for a in args) + "\n"
+            try:
+                s.sendto(msg, (host, port))
+            except OSError as e:
+                print(f"Failed UDP send to {host}:{port}: {e}")
+
+        self.targets[f"{host}:{port}"] = write
+
+    def message(self, level, *args):
+        prefix = f"{self.index} {time.monotonic():0.1f} {level}:"
+        self.index += 1
+        for target in self.targets.values():
+            target(prefix, *args)
+
+    def debug(self, *args):
+        self.message("DEBUG", *args)
+
+    def error(self, *args):
+        self.message("ERROR", *args)
 
 class Settings():
     """Track settings that can be stored/restored on disk."""
@@ -56,7 +88,8 @@ class Settings():
     }
     _dirty = False
 
-    def __init__(self):
+    def __init__(self, log):
+        self.log = log
         self.load()
 
     def __getattr__(self, name):
@@ -78,7 +111,7 @@ class Settings():
             with open(self.path, encoding="utf-8") as fd:
                 self._data.update(json.load(fd))
         except (OSError, ValueError) as e:
-            print(f"Loading {self.path}: {e}")
+            self.log.error(f"Loading {self.path}: {e}")
 
     def save(self):
         if not self._dirty:
@@ -89,12 +122,13 @@ class Settings():
                 fd.write(data)
             self._dirty = False
         except OSError as e:
-            print(f"Saving {self.path}: {e}")
+            self.log.error(f"Saving {self.path}: {e}")
 
 class Mqtt():
     """"Get temperature updates from an MQTT server."""
     mqtt_prefix = "goldilocks/sensor/temperature_F/"
-    def __init__(self, server, port, username, password, network):
+    def __init__(self, log, server, port, username, password, network):
+        self.log = log
         self.client = None
         self.server = server
         self.port = port
@@ -104,7 +138,7 @@ class Mqtt():
         self.temperatures = {}
 
     def on_message(self, _client, topic, message):
-        print(f"New message on topic {topic}: {message}")
+        self.log.debug(f"New message on topic {topic}: {message}")
         location = topic[len(self.mqtt_prefix):]
         value = float(message)
         self.temperatures[location] = value
@@ -115,7 +149,7 @@ class Mqtt():
         socket_pool = self.network.socket_pool()
         if not socket_pool:
             return
-        print(f"MQTT connecting to {self.server}:{self.port}")
+        self.log.debug(f"MQTT connecting to {self.server}:{self.port}")
         self.client = adafruit_minimqtt.MQTT(
             broker=self.server,
             port=self.port,
@@ -130,7 +164,7 @@ class Mqtt():
             self.client.connect()
             self.client.subscribe(self.mqtt_prefix + "#")
         except (RuntimeError, OSError, adafruit_minimqtt.MMQTTException) as e:
-            print(f"Failed to connect to {self.server}:{self.port}: {e}")
+            self.log.error(f"Failed to connect to {self.server}:{self.port}: {e}")
             self.client = None
 
     def poll(self):
@@ -139,12 +173,12 @@ class Mqtt():
         try:
             self.client.loop(0)
         except (adafruit_minimqtt.MMQTTException, OSError, AttributeError) as e:
-            print("MQTT loop() raised:", repr(e))
+            self.log.error("MQTT loop() raised:", repr(e))
             traceback.print_exception(e, e, e.__traceback__)
             try:
                 self.client.disconnect()
             except (adafruit_minimqtt.MMQTTException, OSError, AttributeError) as e:
-                print("MQTT disconnect() raised:")
+                self.log.error("MQTT disconnect() raised:")
                 traceback.print_exception(e, e, e.__traceback__)
             self.client = None
             # We'll connect again the next poll()
@@ -195,6 +229,308 @@ class TouchScreenEvents():
 
         return None
 
+class Network():
+    """Connect to a network.
+    If we could detect when we get disconnected, then we could automatically
+    reconnect as well."""
+    def __init__(self, log, ssid, password):
+        self.log = log
+        self.ssid = ssid
+        self.password = password
+        self._socket_pool = None
+        # wifi.radio doesn't have method that indicates whether it's connected?
+
+    @staticmethod
+    def connected():
+        return wifi.radio.ipv4_address is not None
+
+    def connect(self):
+        if self.connected():
+            return False
+        self.log.debug("Connecting to", self.ssid)
+        try:
+            wifi.radio.connect(self.ssid, self.password)
+        except ConnectionError as e:
+            self.log.error(f"connect to {self.ssid}: {e}")
+            return False
+        self.log.debug(f"Connected to {self.ssid}.",
+            f"hostname={wifi.radio.hostname},",
+            f"ipv4_address={wifi.radio.ipv4_address}")
+        self._socket_pool = socketpool.SocketPool(wifi.radio)
+        return True
+
+    def socket_pool(self):
+        return self._socket_pool
+
+class Task():
+    """Simple task."""
+    def __init__(self, fn, name : str):
+        self.fn = fn
+        self.name = name
+
+    def run(self):
+        return self.fn()
+
+    def repr(self):
+        return f"Task({self.fn}, {self.name})"
+
+class RepeatTask(Task):
+    """Task that needs to be repeated over and over with a given period."""
+    def __init__(self, fn, period : float, name : str):
+        super().__init__(fn, name)
+        self.fn = fn
+        self.period = period
+        self.name = name
+
+    def run(self):
+        self.fn()
+        return self.period
+
+    def repr(self):
+        return f"Task({self.fn}, {self.period}, {self.name})"
+
+class Datum():
+    """Store a single sensor reading."""
+    def __init__(self, value, timestamp=None):
+        self.value = value
+        self.timestamp = timestamp or time.monotonic()
+
+    def __repr__(self):
+        return f"Datum({self.value}, {self.timestamp})"
+
+    def __str__(self):
+        ago = time.monotonic() - self.timestamp
+        return f"{self.value:.1f} {ago:.0f}s ago"
+
+class TaskRunner():
+    """Run tasks, most urgent first."""
+    def __init__(self, log):
+        self.log = log
+        # Array of (next run time, Task)
+        self.task_queue = PriorityQueue()
+
+    def add(self, task : Task, delay=0):
+        self.task_queue.add(task, -time.monotonic() - delay)
+
+    def run(self):
+        now = time.monotonic()
+        # pylint: disable-msg=invalid-unary-operand-type
+        run_time = -self.task_queue.peek_priority()
+        if run_time <= now:
+            task = self.task_queue.pop()
+            self.log.debug(f"run {task.name}")
+            run_after = task.run()
+            if run_after:
+                next_time = run_time + run_after
+                if next_time < now:
+                    #print(f"Can't run {task} after {run_after}s because we're already too late.")
+                    next_time = now + run_after
+                self.task_queue.add(task, -next_time)
+
+class Thermostat():
+    """Top-level class for the thermostat application with GUI and temperature
+    control."""
+
+    presets = {
+        "Sleep": (58, 74),
+        "Away": (64, 79),
+        "Home": (68, 75)
+    }
+
+    def select_preset(self, name):
+        low, high = self.presets[name]
+        self.set_range(low, high)
+
+    def __init__(self):
+        self.log = Logger()
+        self.settings = Settings(self.log)
+
+        # Get splash screen going first.
+        spi = board.SPI()
+        self.gui = Gui(self.log, self, spi)
+
+        self.task_runner = TaskRunner(self.log)
+
+        ### Hardware devices
+        try:
+            i2c = board.I2C()
+        except RuntimeError as e:
+            self.log.error("No I2C bus found!")
+            self.log.error(e)
+        else:
+            self.rtc = adafruit_pcf8523.PCF8523(i2c)
+            self.task_runner.add(RepeatTask(
+                lambda: self.gui.update_time(self.now()),
+                1, "time update"))
+            self.task_runner.add(RepeatTask(self.sync_time, 12 * 3600, "time sync"), 10)
+
+            try:
+                self.bme280 = adafruit_bme280.Adafruit_BME280_I2C(i2c)
+            except ValueError as e:
+                self.log.error(f"Couldn't init BME280: {e}")
+            else:
+                self.task_runner.add(RepeatTask(self.poll_local_temp, 5, "local temp poll"))
+
+        self.scheduler = Scheduler(self.log, self)
+        #self.scheduler.test()
+        self.task_runner.add(RepeatTask(self.scheduler.poll, 15, "scheduler poll"))
+
+        # Start network, and use it.
+        self.network = Network(self.log, secrets.SSID, secrets.PASSWORD)
+        self.task_runner.add(RepeatTask(self.network_connect, 10, "network connect"))
+
+        self.mqtt = Mqtt(self.log,
+                         secrets.MQTT_SERVER, secrets.MQTT_PORT,
+                         secrets.MQTT_USERNAME, secrets.MQTT_PASSWORD,
+                         self.network)
+        self.task_runner.add(RepeatTask(self.mqtt.connect, 60, "mqtt connect"), 5)
+        self.task_runner.add(RepeatTask(self.poll_mqtt, 1, "mqtt poll"), 6)
+
+        self.uart = busio.UART(board.TX, board.RX, baudrate=2400, bits=8,
+                               parity=busio.UART.Parity.EVEN, stop=1, timeout=0)
+
+        self.heatPump = HeatPump.HeatPump(self.uart, log=self.log)
+        self.task_runner.add(RepeatTask(self.heatPump.poll, 1, "heatpump poll"), 6)
+
+        ### Local variables.
+        self.temperatures = {}
+        self.last_stamp = 0
+        # If set, then we're heating or cooling until we reach this temperature.
+        self.target_temperature = None
+
+        microcontroller.watchdog.timeout = 20
+        microcontroller.watchdog.mode = WatchDogMode.RESET
+
+    def network_connect(self):
+        if not self.network.connected():
+            if self.network.connect():
+                self.log.add_udp_destination(self.network.socket_pool(),
+                                             secrets.LOG_SERVER, secrets.LOG_PORT)
+
+    def poll_local_temp(self):
+        self.temperatures["head"] = Datum(celsius_to_fahrenheit(self.bme280.temperature))
+        self.temperature_updated()
+
+    def poll_mqtt(self):
+        temperature_updates = self.mqtt.poll()
+        for (k, v) in temperature_updates:
+            self.temperatures[k] = Datum(v)
+        self.temperature_updated()
+
+    def temperature_updated(self):
+        if self.temperatures:
+            overall_temperature = sum(v.value for v in self.temperatures.values()) / \
+                    len(self.temperatures)
+        else:
+            overall_temperature = 70
+        self.gui.update_temperatures(self.temperatures, overall_temperature)
+
+        if self.target_temperature is None:
+            if overall_temperature <= self.settings.temp_low:
+                # It's cold
+                self.heatPump.set_mode(HeatPump.Mode.HEAT)
+                self.heatPump.set_power(True)
+                self.target_temperature = self.settings.temp_low + 1
+                self.heatPump.set_temperature_c(fahrenheit_to_celsius(self.target_temperature))
+            elif overall_temperature >= self.settings.temp_high:
+                # It's hot
+                self.heatPump.set_mode(HeatPump.Mode.COOL)
+                self.heatPump.set_power(True)
+                self.target_temperature = self.settings.temp_high - 1
+                self.heatPump.set_temperature_c(fahrenheit_to_celsius(self.target_temperature))
+            else:
+                self.heatPump.set_power(False)
+
+        else:
+            if self.settings.temp_low + 1 < overall_temperature < self.settings.temp_high - 1:
+                # We've achieved our goal!
+                self.heatPump.set_power(False)
+                self.target_temperature = None
+
+        self.heatPump.set_remote_temperature_c(fahrenheit_to_celsius(overall_temperature))
+
+    def sync_time(self):
+        if not self.network.connected():
+            return
+        socket_pool = self.network.socket_pool()
+        if not socket_pool:
+            return
+        # TODO: How do you deal with timezones?
+        ntp = adafruit_ntp.NTP(socket_pool, tz_offset=-8)
+        try:
+            self.rtc.datetime = ntp.datetime
+        except OSError as e:
+            # Doesn't always work.
+            self.log.error(f"NTP failed: {e}")
+
+    def now(self):
+        return self.rtc.datetime
+
+    def run(self):
+        self.gui.show_main()
+        while True:
+            microcontroller.watchdog.feed()
+
+            self.task_runner.run()
+
+            self.gui.poll()
+
+            # Does this save power?
+            #time.sleep(0.1)
+
+    def get_temp_low(self):
+        return self.settings.temp_low
+
+    def get_temp_high(self):
+        return self.settings.temp_high
+
+    def set_range(self, low, high):
+        self.settings.set("temp_low", low)
+        self.settings.set("temp_high", high)
+        self.target_temperature = None
+        # Save in a little while, so we don't save every time the user hits a button.
+        self.task_runner.add(Task(self.settings.save, "settings save"), 15)
+
+class Scheduler():
+    """
+    Simple scheduler that changes the thermostat preset when we cross into a new
+    scheduled block of time.
+    """
+    daily = (
+        (8, 0, "Away"),
+        (22, 0, "Sleep")
+    )
+    def __init__(self, log : Logger, thermostat : Thermostat):
+        self.log = log
+        self.thermostat = thermostat
+        self.index = self.find_index(self.thermostat.now())
+
+    def find_index(self, tm):
+        for i, (hour, minute, _preset) in enumerate(self.daily):
+            if (hour > tm.tm_hour or
+                    (hour == tm.tm_hour and minute > tm.tm_min)):
+                return i-1
+        return -1
+
+    def poll(self):
+        now = self.thermostat.now()
+        new_index = self.find_index(now)
+        if new_index != self.index:
+            # Do we need more abstraction to hide gui?
+            self.thermostat.gui.select_preset(self.daily[new_index][2])
+            self.log.debug(now, "schedule poll change to", self.daily[new_index])
+            self.index = new_index
+
+    def test(self):
+        for hour in range(0, 24):
+            for minute in range(0, 60, 30):
+                tm = time.struct_time([
+                    2000, 1, 1, # year month day
+                    hour, minute, 0, # hour minute second
+                    1, 1, 0 # wday yday isdst
+                    ])
+                self.log.debug(f"{hour:2d}:{minute:02d}", self.find_index(tm))
+
 class Gui():
     """Display a GUI."""
     # TODO: play with backlight brightness,
@@ -207,7 +543,8 @@ class Gui():
             self.fonts[(size, bold)] = bitmap_font.load_font(f"font/{font_name}-{size}.pcf")
         return self.fonts[(size, bold)]
 
-    def __init__(self, thermostat, spi):
+    def __init__(self, log : Logger, thermostat : Thermostat, spi):
+        self.log = log
         self.thermostat = thermostat
 
         self.fonts = {}
@@ -231,8 +568,8 @@ class Gui():
             touch = Adafruit_STMPE610_SPI(spi, touch_cs,
                     calibration=((276, 3820), (378, 3743)))
         except RuntimeError as e:
-            print("No touch screen connected!")
-            print(e)
+            self.log.error("No touch screen connected!")
+            self.log.error(e)
             self.tse = None
         else:
             self.tse = TouchScreenEvents(touch)
@@ -440,7 +777,7 @@ class Gui():
                 break
 
     def swipe(self, x, y):
-        print(f"swipe {x}, {y}")
+        self.log.debug(f"swipe {x}, {y}")
         if abs(y) > 80 or abs(x) < 150:
             return
         if x > 0:
@@ -449,305 +786,6 @@ class Gui():
             self.current_page -= 1
         self.current_page = self.current_page % len(self.pages)
         self.display.show(self.pages[self.current_page])
-
-class Network():
-    """Connect to a network.
-    If we could detect when we get disconnected, then we could automatically
-    reconnect as well."""
-    def __init__(self, ssid, password):
-        self.ssid = ssid
-        self.password = password
-        self._socket_pool = None
-        # wifi.radio doesn't have method that indicates whether it's connected?
-
-    @staticmethod
-    def connected():
-        return wifi.radio.ipv4_address is not None
-
-    def connect(self):
-        if self.connected():
-            return
-        print("Connecting to", self.ssid)
-        try:
-            wifi.radio.connect(self.ssid, self.password)
-        except ConnectionError as e:
-            print(f"connect to {self.ssid}: {e}")
-            return
-        print(f"Connected to {self.ssid}.",
-            f"hostname={wifi.radio.hostname},",
-            f"ipv4_address={wifi.radio.ipv4_address}")
-        self._socket_pool = socketpool.SocketPool(wifi.radio)
-
-    def socket_pool(self):
-        return self._socket_pool
-
-class Task():
-    """Simple task."""
-    def __init__(self, fn=None, name : str = None):
-        self.fn = fn
-        self.name = name
-
-    def run(self):
-        return self.fn()
-
-    def repr(self):
-        return f"Task({self.fn}, {self.name})"
-
-class RepeatTask(Task):
-    """Task that needs to be repeated over and over with a given period."""
-    def __init__(self, fn, period, name=None):
-        super().__init__(fn, name)
-        self.fn = fn
-        self.period = period
-        self.name = name
-
-    def run(self):
-        self.fn()
-        return self.period
-
-    def repr(self):
-        return f"Task({self.fn}, {self.period}, {self.name})"
-
-class Datum():
-    """Store a single sensor reading."""
-    def __init__(self, value, timestamp=None):
-        self.value = value
-        self.timestamp = timestamp or time.monotonic()
-
-    def __repr__(self):
-        return f"Datum({self.value}, {self.timestamp})"
-
-    def __str__(self):
-        ago = time.monotonic() - self.timestamp
-        return f"{self.value:.1f} {ago:.0f}s ago"
-
-class TaskRunner():
-    """Run tasks, most urgent first."""
-    def __init__(self):
-        # Array of (next run time, Task)
-        self.task_queue = PriorityQueue()
-
-    def add(self, task : Task, delay=0):
-        self.task_queue.add(task, -time.monotonic() - delay)
-
-    def run(self):
-        now = time.monotonic()
-        # pylint: disable-msg=invalid-unary-operand-type
-        run_time = -self.task_queue.peek_priority()
-        if run_time <= now:
-            task = self.task_queue.pop()
-            run_after = task.run()
-            if run_after:
-                next_time = run_time + run_after
-                if next_time < now:
-                    #print(f"Can't run {task} after {run_after}s because we're already too late.")
-                    next_time = now + run_after
-                self.task_queue.add(task, -next_time)
-
-class Scheduler():
-    """
-    Simple scheduler that changes the thermostat preset when we cross into a new
-    scheduled block of time.
-    """
-    daily = (
-        (8, 0, "Away"),
-        (22, 0, "Sleep")
-    )
-    def __init__(self, thermostat):
-        self.thermostat = thermostat
-        self.index = self.find_index(self.thermostat.now())
-
-    def find_index(self, tm):
-        for i, (hour, minute, _preset) in enumerate(self.daily):
-            if (hour > tm.tm_hour or
-                    (hour == tm.tm_hour and minute > tm.tm_min)):
-                return i-1
-        return -1
-
-    def poll(self):
-        now = self.thermostat.now()
-        new_index = self.find_index(now)
-        if new_index != self.index:
-            # Do we need more abstraction to hide gui?
-            self.thermostat.gui.select_preset(self.daily[new_index][2])
-            print(now, "schedule poll change to", self.daily[new_index])
-            self.index = new_index
-
-    def test(self):
-        for hour in range(0, 24):
-            for minute in range(0, 60, 30):
-                tm = time.struct_time([
-                    2000, 1, 1, # year month day
-                    hour, minute, 0, # hour minute second
-                    1, 1, 0 # wday yday isdst
-                    ])
-                print(f"{hour:2d}:{minute:02d}", self.find_index(tm))
-
-class Thermostat():
-    """Top-level class for the thermostat application with GUI and temperature
-    control."""
-
-    presets = {
-        "Sleep": (58, 74),
-        "Away": (64, 79),
-        "Home": (68, 75)
-    }
-
-    def select_preset(self, name):
-        low, high = self.presets[name]
-        self.set_range(low, high)
-
-    def __init__(self):
-        self.settings = Settings()
-
-        # Get splash screen going first.
-        spi = board.SPI()
-        self.gui = Gui(self, spi)
-
-        self.task_runner = TaskRunner()
-
-        ### Hardware devices
-        try:
-            i2c = board.I2C()
-        except RuntimeError as e:
-            print("No I2C bus found!")
-            print(e)
-        else:
-            self.rtc = adafruit_pcf8523.PCF8523(i2c)
-            self.task_runner.add(RepeatTask(
-                lambda: self.gui.update_time(self.now()),
-                1))
-            self.task_runner.add(RepeatTask(self.sync_time, 12 * 3600), 10)
-
-            try:
-                self.bme280 = adafruit_bme280.Adafruit_BME280_I2C(i2c)
-            except ValueError as e:
-                print(f"Couldn't init BME280: {e}")
-            else:
-                self.task_runner.add(RepeatTask(self.poll_local_temp, 1))
-
-        self.scheduler = Scheduler(self)
-        #self.scheduler.test()
-        self.task_runner.add(RepeatTask(self.scheduler.poll, 15))
-
-        # Start network, and use it.
-        self.network = Network(secrets.SSID, secrets.PASSWORD)
-        self.task_runner.add(RepeatTask(self.network.connect, 10))
-
-        self.mqtt = Mqtt(secrets.MQTT_SERVER, secrets.MQTT_PORT,
-                         secrets.MQTT_USERNAME, secrets.MQTT_PASSWORD,
-                         self.network)
-        self.task_runner.add(RepeatTask(self.mqtt.connect, 60), 5)
-        self.task_runner.add(RepeatTask(self.poll_mqtt, 1), 6)
-
-        self.uart = busio.UART(board.TX, board.RX, baudrate=2400, bits=8,
-                               parity=busio.UART.Parity.EVEN, stop=1, timeout=0)
-
-        self.heatPump = HeatPump.HeatPump(self.uart)
-
-        ### Local variables.
-        self.temperatures = {}
-        self.last_stamp = 0
-        # If set, then we're heating or cooling until we reach this temperature.
-        self.target_temperature = None
-
-        microcontroller.watchdog.timeout = 20
-        microcontroller.watchdog.mode = WatchDogMode.RESET
-
-    def poll_local_temp(self):
-        self.temperatures["head"] = Datum(celsius_to_fahrenheit(self.bme280.temperature))
-        self.temperature_updated()
-
-    def poll_mqtt(self):
-        temperature_updates = self.mqtt.poll()
-        for (k, v) in temperature_updates:
-            self.temperatures[k] = Datum(v)
-        self.temperature_updated()
-
-    def temperature_updated(self):
-        if self.temperatures:
-            overall_temperature = sum(v.value for v in self.temperatures.values()) / \
-                    len(self.temperatures)
-        else:
-            overall_temperature = 70
-        self.gui.update_temperatures(self.temperatures, overall_temperature)
-
-        if self.target_temperature is None:
-            if overall_temperature <= self.settings.temp_low:
-                # It's cold
-                self.heatPump.set_mode(HeatPump.Mode.HEAT)
-                self.heatPump.set_power(True)
-                self.target_temperature = self.settings.temp_low + 1
-                self.heatPump.set_temperature_c(fahrenheit_to_celsius(self.target_temperature))
-            elif overall_temperature >= self.settings.temp_high:
-                # It's hot
-                self.heatPump.set_mode(HeatPump.Mode.COOL)
-                self.heatPump.set_power(True)
-                self.target_temperature = self.settings.temp_high - 1
-                self.heatPump.set_temperature_c(fahrenheit_to_celsius(self.target_temperature))
-            else:
-                self.heatPump.set_power(False)
-
-        else:
-            if self.settings.temp_low + 1 < overall_temperature < self.settings.temp_high - 1:
-                # We've achieved our goal!
-                self.heatPump.set_power(False)
-                self.target_temperature = None
-
-        self.heatPump.set_remote_temperature_c(fahrenheit_to_celsius(overall_temperature))
-
-    def sync_time(self):
-        if not self.network.connected():
-            return
-        socket_pool = self.network.socket_pool()
-        if not socket_pool:
-            return
-        # TODO: How do you deal with timezones?
-        ntp = adafruit_ntp.NTP(socket_pool, tz_offset=-8)
-        try:
-            self.rtc.datetime = ntp.datetime
-        except OSError as e:
-            # Doesn't always work.
-            print(f"NTP failed: {e}")
-
-    @staticmethod
-    def error(error):
-        print(error)
-
-    def now(self):
-        return self.rtc.datetime
-
-    def stamp(self, text=""):
-        now = time.monotonic()
-        print(f"{now - self.last_stamp}s {text}")
-        self.last_stamp = now
-
-    def run(self):
-        self.gui.show_main()
-        while True:
-            microcontroller.watchdog.feed()
-
-            self.task_runner.run()
-
-            self.gui.poll()
-
-            self.heatPump.poll()
-
-            # Does this save power?
-            #time.sleep(0.1)
-
-    def get_temp_low(self):
-        return self.settings.temp_low
-
-    def get_temp_high(self):
-        return self.settings.temp_high
-
-    def set_range(self, low, high):
-        self.settings.set("temp_low", low)
-        self.settings.set("temp_high", high)
-        self.target_temperature = None
-        # Save in a little while, so we don't save every time the user hits a button.
-        self.task_runner.add(Task(self.settings.save, name="save settings"), 15)
 
 def main():
     thermostat = Thermostat()
