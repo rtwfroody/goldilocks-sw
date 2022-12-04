@@ -295,12 +295,14 @@ class Datum():
         self.value = value
         self.timestamp = timestamp or time.monotonic()
 
+    def age(self):
+        return time.monotonic() - self.timestamp
+
     def __repr__(self):
         return f"Datum({self.value}, {self.timestamp})"
 
     def __str__(self):
-        ago = time.monotonic() - self.timestamp
-        return f"{self.value:.1f} {ago:.0f}s ago"
+        return f"{self.value:.1f} {self.age():.0f}s ago"
 
 class TaskRunner():
     """Run tasks, most urgent first."""
@@ -417,12 +419,24 @@ class Thermostat():
             self.temperatures[k] = Datum(v)
         self.temperature_updated()
 
+    def overall_temperature(self):
+        total = 0
+        count = 0
+        for datum in self.temperatures.values():
+            if datum.age() < 120:
+                total += datum.value
+                count += 1
+            else:
+                self.log.debug("ignore", datum)
+
+        if count == 0:
+            # We shouldn't really get here. Is it better to assert?
+            return 70
+
+        return total / count
+
     def temperature_updated(self):
-        if self.temperatures:
-            overall_temperature = sum(v.value for v in self.temperatures.values()) / \
-                    len(self.temperatures)
-        else:
-            overall_temperature = 70
+        overall_temperature = self.overall_temperature()
         self.gui.update_temperatures(self.temperatures, overall_temperature)
 
         if self.target_temperature is None:
