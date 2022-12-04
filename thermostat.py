@@ -792,7 +792,7 @@ class Gui():
 
     def swipe(self, x, y):
         self.log.debug(f"swipe {x}, {y}")
-        if abs(y) > 80 or abs(x) < 150:
+        if abs(y) > 60 or abs(x) < 100:
             return
         if x > 0:
             self.current_page += 1
