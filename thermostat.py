@@ -404,6 +404,13 @@ class Thermostat():
         microcontroller.watchdog.timeout = 20
         microcontroller.watchdog.mode = WatchDogMode.RESET
 
+        self.task_runner.add(Task(self.hard_reset, "hard reset"), 900)
+
+    def hard_reset(self):
+        self.log.debug("hard reset")
+        time.sleep(1)
+        microcontroller.reset()
+
     def network_connect(self):
         if not self.network.connected():
             if self.network.connect():
