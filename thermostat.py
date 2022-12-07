@@ -359,6 +359,7 @@ class Thermostat():
         except RuntimeError as e:
             self.log.error("No I2C bus found!")
             self.log.error(e)
+            self.rtc = None
         else:
             self.rtc = adafruit_pcf8523.PCF8523(i2c)
             self.task_runner.add(RepeatTask(
@@ -478,7 +479,10 @@ class Thermostat():
             self.log.error(f"NTP failed: {e}")
 
     def now(self):
-        return self.rtc.datetime
+        if self.rtc:
+            return self.rtc.datetime
+
+        return time.localtime()
 
     def run(self):
         self.gui.show_main()
