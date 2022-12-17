@@ -68,7 +68,7 @@ class Logger():
         self.targets[f"{host}:{port}"] = write
 
     def message(self, level, *args):
-        prefix = f"{self.index} {time.monotonic():0.1f} {level}:"
+        prefix = f"{self.index} {time.monotonic():0.2f} {level}:"
         self.index += 1
         for target in self.targets.values():
             target(prefix, *args)
@@ -126,7 +126,8 @@ class Settings():
 
 class Mqtt():
     """"Get temperature updates from an MQTT server."""
-    mqtt_prefix = "goldilocks/sensor/temperature_F/"
+    temperature_prefix = "goldilocks/sensor/temperature_F/"
+    status_prefix = "goldilocks/status/"
     def __init__(self, log, server, port, username, password, network):
         self.log = log
         self.client = None
@@ -139,7 +140,7 @@ class Mqtt():
 
     def on_message(self, _client, topic, message):
         self.log.debug(f"New message on topic {topic}: {message}")
-        location = topic[len(self.mqtt_prefix):]
+        location = topic[len(self.temperature_prefix):]
         value = float(message)
         self.temperatures[location] = value
 
@@ -162,7 +163,7 @@ class Mqtt():
         self.client.on_message = self.on_message
         try:
             self.client.connect()
-            self.client.subscribe(self.mqtt_prefix + "#")
+            self.client.subscribe(self.temperature_prefix + "#")
         except (RuntimeError, OSError, adafruit_minimqtt.MMQTTException) as e:
             self.log.error(f"Failed to connect to {self.server}:{self.port}: {e}")
             self.client = None
@@ -172,6 +173,16 @@ class Mqtt():
             return []
         try:
             self.client.loop(0)
+            # TODO: Don't do this *all* the time.
+            self.client.publish("homeassistant/sensor/uptime/config",
+                                json.dumps({
+                                    "name": "uptime",
+                                    "device_class": "duration",
+                                    "state_topic": self.status_prefix + "uptime",
+                                    "unit_of_measurement": "s",
+                                    "expire_after": 15
+                                }))
+            self.client.publish(self.status_prefix + "uptime", time.monotonic())
         except (adafruit_minimqtt.MMQTTException, OSError, AttributeError) as e:
             self.log.error("MQTT loop() raised:", repr(e))
             traceback.print_exception(e, e, e.__traceback__)
@@ -312,6 +323,7 @@ class TaskRunner():
         self.task_queue = PriorityQueue()
 
     def add(self, task : Task, delay=0):
+        self.log.debug("add task", task.name)
         self.task_queue.add(task, -time.monotonic() - delay)
 
     def run(self):
@@ -322,6 +334,7 @@ class TaskRunner():
             task = self.task_queue.pop()
             self.log.debug(f"run {task.name}")
             run_after = task.run()
+            self.log.debug(f"  -> {run_after}")
             if run_after:
                 next_time = run_time + run_after
                 if next_time < now:
@@ -401,10 +414,10 @@ class Thermostat():
         # If set, then we're heating or cooling until we reach this temperature.
         self.target_temperature = None
 
-        microcontroller.watchdog.timeout = 20
+        microcontroller.watchdog.timeout = 45
         microcontroller.watchdog.mode = WatchDogMode.RESET
 
-        self.task_runner.add(Task(self.hard_reset, "hard reset"), 900)
+        #self.task_runner.add(Task(self.hard_reset, "hard reset"), 900)
 
     def hard_reset(self):
         self.log.debug("hard reset")
@@ -581,6 +594,7 @@ class Gui():
         displayio.release_displays()
         display_bus = displayio.FourWire(spi, command=board.D10, chip_select=board.D9)
         self.display = adafruit_ili9341.ILI9341(display_bus, width=self.width, height=self.height)
+        self.log.debug("display:", self.display)
 
         self.preset_buttons = {}
 
@@ -607,6 +621,7 @@ class Gui():
         self.selected = None
         self.drag_start = None
         self.current_page = 0
+        self.colon_blink_state = True
 
     def make_splash(self):
         # Make the display context
@@ -755,7 +770,12 @@ class Gui():
 
     def update_time(self, t):
         # pylint: disable-msg=consider-using-f-string
-        self.time_label.text = "%d/%d %d:%02d" % (
+        if self.colon_blink_state:
+            colon = ":"
+        else:
+            colon = " "
+        self.colon_blink_state = not self.colon_blink_state
+        self.time_label.text = f"%d/%d %d{colon}%02d" % (
             t.tm_mon, t.tm_mday,
             t.tm_hour, t.tm_min
         )
