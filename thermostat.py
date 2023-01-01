@@ -84,7 +84,8 @@ class Settings():
     path = "/goldilocks.json"
     _data = {
         "temp_high": 80,
-        "temp_low": 60
+        "temp_low": 60,
+        "name": "".join(f"{b:02x}" for b in microcontroller.cpu.uid)
     }
     _dirty = False
 
@@ -110,6 +111,7 @@ class Settings():
         try:
             with open(self.path, encoding="utf-8") as fd:
                 self._data.update(json.load(fd))
+            self.log.debug(f"Loaded {self._data}")
         except (OSError, ValueError) as e:
             self.log.error(f"Loading {self.path}: {e}")
 
@@ -127,8 +129,7 @@ class Settings():
 class Mqtt():
     """"Get temperature updates from an MQTT server."""
     temperature_prefix = "goldilocks/sensor/temperature_F/"
-    status_prefix = "goldilocks/status/"
-    def __init__(self, log, server, port, username, password, network):
+    def __init__(self, log, server, port, username, password, network, client_name : str):
         self.log = log
         self.client = None
         self.server = server
@@ -136,7 +137,10 @@ class Mqtt():
         self.username = username
         self.password = password
         self.network = network
+        self.client_name = client_name
+        self.status_prefix = f"goldilocks/{self.client_name}/status/"
         self.temperatures = {}
+        self.last_advertisement = 0
 
     def on_message(self, _client, topic, message):
         self.log.debug(f"New message on topic {topic}: {message}")
@@ -168,13 +172,11 @@ class Mqtt():
             self.log.error(f"Failed to connect to {self.server}:{self.port}: {e}")
             self.client = None
 
-    def poll(self):
-        if self.client is None:
-            return []
+    def advertise(self):
+        if not self.client:
+            return
         try:
-            self.client.loop(0)
-            # TODO: Don't do this *all* the time.
-            self.client.publish("homeassistant/sensor/uptime/config",
+            self.client.publish(f"homeassistant/sensor/{self.client_name}/uptime/config",
                                 json.dumps({
                                     "name": "uptime",
                                     "device_class": "duration",
@@ -182,20 +184,34 @@ class Mqtt():
                                     "unit_of_measurement": "s",
                                     "expire_after": 15
                                 }))
+        except (adafruit_minimqtt.MMQTTException, OSError, AttributeError) as e:
+            self.recover(e)
+        self.last_advertisement = time.monotonic()
+
+    def poll(self):
+        if self.client is None:
+            return []
+        try:
+            self.client.loop(0)
+            if time.monotonic() - self.last_advertisement > 600:
+                self.advertise()
             self.client.publish(self.status_prefix + "uptime", time.monotonic())
         except (adafruit_minimqtt.MMQTTException, OSError, AttributeError) as e:
-            self.log.error("MQTT loop() raised:", repr(e))
-            traceback.print_exception(e, e, e.__traceback__)
-            try:
-                self.client.disconnect()
-            except (adafruit_minimqtt.MMQTTException, OSError, AttributeError) as e:
-                self.log.error("MQTT disconnect() raised:")
-                traceback.print_exception(e, e, e.__traceback__)
-            self.client = None
-            # We'll connect again the next poll()
+            self.recover(e)
         retval = list(self.temperatures.items())
         self.temperatures = {}
         return retval
+
+    def recover(self, e):
+        self.log.error("MQTT loop() raised:", repr(e))
+        traceback.print_exception(e, e, e.__traceback__)
+        try:
+            self.client.disconnect()
+        except (adafruit_minimqtt.MMQTTException, OSError, AttributeError) as exc:
+            self.log.error("MQTT disconnect() raised:")
+            traceback.print_exception(exc, exc, exc.__traceback__)
+        self.client = None
+        # We'll connect again the next poll()
 
 class TouchScreenEvent():
     """Represent a touch screen event."""
@@ -332,9 +348,9 @@ class TaskRunner():
         run_time = -self.task_queue.peek_priority()
         if run_time <= now:
             task = self.task_queue.pop()
-            self.log.debug(f"run {task.name}")
+            #self.log.debug(f"run {task.name}")
             run_after = task.run()
-            self.log.debug(f"  -> {run_after}")
+            #self.log.debug(f"  -> {run_after}")
             if run_after:
                 next_time = run_time + run_after
                 if next_time < now:
@@ -398,9 +414,10 @@ class Thermostat():
         self.mqtt = Mqtt(self.log,
                          secrets.MQTT_SERVER, secrets.MQTT_PORT,
                          secrets.MQTT_USERNAME, secrets.MQTT_PASSWORD,
-                         self.network)
+                         self.network, self.settings.name)
         self.task_runner.add(RepeatTask(self.mqtt.connect, 60, "mqtt connect"), 5)
         self.task_runner.add(RepeatTask(self.poll_mqtt, 1, "mqtt poll"), 6)
+        self.task_runner.add(RepeatTask(self.mqtt.advertise, 123, "mqtt advertise"), 6)
 
         self.uart = busio.UART(board.TX, board.RX, baudrate=2400, bits=8,
                                parity=busio.UART.Parity.EVEN, stop=1, timeout=0)
