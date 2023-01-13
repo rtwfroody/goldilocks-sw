@@ -260,10 +260,11 @@ class Network():
     """Connect to a network.
     If we could detect when we get disconnected, then we could automatically
     reconnect as well."""
-    def __init__(self, log, ssid, password):
+    def __init__(self, log, ssid, password, hostname):
         self.log = log
         self.ssid = ssid
         self.password = password
+        self.hostname = hostname
         self._socket_pool = None
         # wifi.radio doesn't have method that indicates whether it's connected?
 
@@ -275,6 +276,7 @@ class Network():
         if self.connected():
             return False
         self.log.debug("Connecting to", self.ssid)
+        wifi.radio.hostname = self.hostname
         try:
             wifi.radio.connect(self.ssid, self.password)
         except ConnectionError as e:
@@ -408,7 +410,8 @@ class Thermostat():
         self.task_runner.add(RepeatTask(self.scheduler.poll, 15, "scheduler poll"))
 
         # Start network, and use it.
-        self.network = Network(self.log, secrets.SSID, secrets.PASSWORD)
+        self.network = Network(self.log, secrets.SSID, secrets.PASSWORD,
+                "goldilocks-" + self.settings.name)
         self.task_runner.add(RepeatTask(self.network_connect, 10, "network connect"))
 
         self.mqtt = Mqtt(self.log,
