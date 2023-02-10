@@ -24,6 +24,7 @@ import secrets
 import adafruit_ili9341
 import adafruit_ntp
 import adafruit_pcf8523
+import adafruit_touchscreen
 import board    # pylint: disable-msg=import-error
 import busio    # pylint: disable-msg=import-error
 import digitalio    # pylint: disable-msg=import-error
@@ -228,6 +229,8 @@ class TouchScreenEvent():
 
 class TouchScreenEvents():
     """Monitor a touch screen for events."""
+    x_range = [65536, 0]
+    y_range = [65536, 0]
 
     def __init__(self, touch):
         self.touch = touch
@@ -245,6 +248,11 @@ class TouchScreenEvents():
         point = self.touch.touch_point
         if point:
             x, y, _pressure = point
+            self.x_range[0] = min(x, self.x_range[0])
+            self.x_range[1] = max(x, self.x_range[1])
+            self.y_range[0] = min(y, self.y_range[0])
+            self.y_range[1] = max(y, self.y_range[1])
+            print(f"point={point}, calibration=({self.x_range}, {self.y_range})")
             if self.last_point:
                 event = TouchScreenEvent(TouchScreenEvent.DRAG, x, y)
             else:
@@ -350,9 +358,10 @@ class TaskRunner():
         run_time = -self.task_queue.peek_priority()
         if run_time <= now:
             task = self.task_queue.pop()
-            #self.log.debug(f"run {task.name}")
             run_after = task.run()
-            #self.log.debug(f"  -> {run_after}")
+            end = time.monotonic()
+            if end - now > .08:
+                self.log.debug(f"{task.name} took {end - now}s -> {run_after}")
             if run_after:
                 next_time = run_time + run_after
                 if next_time < now:
@@ -412,7 +421,7 @@ class Thermostat():
         # Start network, and use it.
         self.network = Network(self.log, secrets.SSID, secrets.PASSWORD,
                 "goldilocks-" + self.settings.name)
-        self.task_runner.add(RepeatTask(self.network_connect, 10, "network connect"))
+        #>>> self.task_runner.add(RepeatTask(self.network_connect, 10, "network connect"))
 
         self.mqtt = Mqtt(self.log,
                          secrets.MQTT_SERVER, secrets.MQTT_PORT,
@@ -624,14 +633,33 @@ class Gui():
         # Set up touchscreen
         touch_cs = digitalio.DigitalInOut(board.D6)
         try:
+            # Look for a SPI touchscreen, as implemented on the
+            # TFT FeatherWing - 2.4" 320x240.
             touch = Adafruit_STMPE610_SPI(spi, touch_cs,
-                    calibration=((276, 3820), (378, 3743)))
+                    calibration=((276, 3820), (378, 3743)),
+                    size=(self.width, self.height))
         except RuntimeError as e:
-            self.log.error("No touch screen connected!")
-            self.log.error(e)
-            self.tse = None
-        else:
+            self.log.debug("No SPI touch screen connected!")
+            self.log.debug(e)
+            touch = None
+
+        if not touch:
+            # Look for 4-wire resistive touch screen, as implemented on Adafruit
+            # 2.4" TFT LCD with Touchscreen Breakout.
+
+            touch = adafruit_touchscreen.Touchscreen(
+                x1_pin=board.IO17, x2_pin=board.IO14, y1_pin=board.IO18, y2_pin=board.IO12,
+                calibration=([59889, 12545], [16373, 61473]),
+                size=(self.width, self.height),
+                z_threshold=34800,
+                invert_pressure=False
+            )
+
+        if touch:
+            self.log.debug(f"Connected to touch screen {touch}")
             self.tse = TouchScreenEvents(touch)
+        else:
+            self.tse = None
 
         self.pages = [
             self.make_main(),
@@ -818,8 +846,8 @@ class Gui():
             if not event:
                 continue
 
-            x = int(self.width * event.x / 4096)
-            y = int(self.height * event.y / 4096)
+            x = event.x
+            y = event.y
 
             self.selected = None
             for button in self.main_buttons:
