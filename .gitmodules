@@ -1,0 +1,42 @@
+[submodule "lib/Adafruit_CircuitPython_BME280"]
+	path = lib/Adafruit_CircuitPython_BME280
+	url = git@github.com:adafruit/Adafruit_CircuitPython_BME280.git
+[submodule "lib/Adafruit_CircuitPython_Bitmap_Font"]
+	path = lib/Adafruit_CircuitPython_Bitmap_Font
+	url = git@github.com:adafruit/Adafruit_CircuitPython_Bitmap_Font.git
+[submodule "lib/Adafruit_CircuitPython_datetime"]
+	path = lib/Adafruit_CircuitPython_datetime
+	url = https://github.com/adafruit/Adafruit_CircuitPython_datetime.git
+[submodule "lib/Adafruit_CircuitPython_Display_Button"]
+	path = lib/Adafruit_CircuitPython_Display_Button
+	url = https://github.com/adafruit/Adafruit_CircuitPython_Display_Button.git
+[submodule "lib/Adafruit_CircuitPython_Display_Shapes"]
+	path = lib/Adafruit_CircuitPython_Display_Shapes
+	url = https://github.com/adafruit/Adafruit_CircuitPython_Display_Shapes.git
+[submodule "lib/Adafruit_CircuitPython_Display_Text"]
+	path = lib/Adafruit_CircuitPython_Display_Text
+	url = https://github.com/adafruit/Adafruit_CircuitPython_Display_Text.git
+[submodule "lib/Adafruit_CircuitPython_ILI9341"]
+	path = lib/Adafruit_CircuitPython_ILI9341
+	url = https://github.com/adafruit/Adafruit_CircuitPython_ILI9341.git
+[submodule "lib/Adafruit_CircuitPython_MiniMQTT"]
+	path = lib/Adafruit_CircuitPython_MiniMQTT
+	url = https://github.com/adafruit/Adafruit_CircuitPython_MiniMQTT.git
+[submodule "lib/Adafruit_CircuitPython_NTP"]
+	path = lib/Adafruit_CircuitPython_NTP
+	url = https://github.com/adafruit/Adafruit_CircuitPython_NTP.git
+[submodule "lib/Adafruit_CircuitPython_PCF8523"]
+	path = lib/Adafruit_CircuitPython_PCF8523
+	url = https://github.com/adafruit/Adafruit_CircuitPython_PCF8523.git
+[submodule "lib/Adafruit_CircuitPython_Register"]
+	path = lib/Adafruit_CircuitPython_Register
+	url = https://github.com/adafruit/Adafruit_CircuitPython_Register.git
+[submodule "lib/Adafruit_CircuitPython_RGBLED"]
+	path = lib/Adafruit_CircuitPython_RGBLED
+	url = git@github.com:adafruit/Adafruit_CircuitPython_RGBLED.git
+[submodule "lib/Adafruit_CircuitPython_SimpleIO"]
+	path = lib/Adafruit_CircuitPython_SimpleIO
+	url = git@github.com:adafruit/Adafruit_CircuitPython_SimpleIO.git
+[submodule "lib/Adafruit_CircuitPython_Touchscreen"]
+	path = lib/Adafruit_CircuitPython_Touchscreen
+	url = https://github.com/adafruit/Adafruit_CircuitPython_Touchscreen.git
