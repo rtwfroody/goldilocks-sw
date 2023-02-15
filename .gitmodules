@@ -40,3 +40,12 @@
 [submodule "lib/Adafruit_CircuitPython_Touchscreen"]
 	path = lib/Adafruit_CircuitPython_Touchscreen
 	url = https://github.com/adafruit/Adafruit_CircuitPython_Touchscreen.git
+[submodule "lib/Adafruit_CircuitPython_STMPE610"]
+	path = lib/Adafruit_CircuitPython_STMPE610
+	url = https://github.com/adafruit/Adafruit_CircuitPython_STMPE610.git
+[submodule "lib/priority-queue"]
+	path = lib/priority-queue
+	url = git@github.com:rtwfroody/priority-queue.git
+[submodule "lib/CircuitPython_HeatPump"]
+	path = lib/CircuitPython_HeatPump
+	url = git@github.com:rtwfroody/CircuitPython_HeatPump.git
